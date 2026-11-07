@@ -1,0 +1,5 @@
+---
+preseed_path: "{{ remaster_iso_host_dir }}/preseed.cfg"
+preseed_locale: "{{ iso_locale }}"
+preseed_keymap: "{{ iso_keymap }}"
+preseed_timezone: "{{ iso_timezone }}"

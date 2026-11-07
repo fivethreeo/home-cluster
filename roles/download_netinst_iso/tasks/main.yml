@@ -1,0 +1,38 @@
+---
+- name: Create ISO build directory
+  ansible.builtin.file:
+    path: "{{ iso_work_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Read current Debian netinst ISO listing
+  ansible.builtin.uri:
+    url: "{{ debian_netinst_directory_url }}/"
+    return_content: true
+  register: debian_netinst_listing
+
+- name: Select current Debian netinst ISO
+  ansible.builtin.set_fact:
+    debian_netinst_filename: >-
+      {{
+        debian_netinst_listing.content
+        | regex_findall('debian-[0-9]+\.[0-9]+\.[0-9]+-amd64-netinst\.iso')
+        | unique
+        | first
+        | default('')
+      }}
+
+- name: Verify that a Debian netinst ISO was found
+  ansible.builtin.assert:
+    that: debian_netinst_filename | length > 0
+    fail_msg: "No amd64 Debian netinst ISO was found at {{ debian_netinst_directory_url }}."
+
+- name: Set Debian netinst ISO path
+  ansible.builtin.set_fact:
+    debian_netinst_path: "{{ iso_work_dir }}/{{ debian_netinst_filename }}"
+
+- name: Download Debian netinst ISO
+  ansible.builtin.get_url:
+    url: "{{ debian_netinst_directory_url }}/{{ debian_netinst_filename }}"
+    dest: "{{ debian_netinst_path }}"
+    mode: "0644"

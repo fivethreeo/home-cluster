@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+mkdir -p /target/home/{{ iso_username }}/.ssh
+if [ -f authorized_keys ]; then
+  cp authorized_keys /target/home/{{ iso_username }}/.ssh/authorized_keys
+  in-target chmod 700 /home/{{ iso_username }}/.ssh
+  in-target chmod 640 /home/{{ iso_username }}/.ssh/authorized_keys
+  in-target chown -R {{ iso_username }}:{{ iso_username }} /home/{{ iso_username }}/.ssh
+fi
+echo "{{ iso_username }} ALL=(ALL) NOPASSWD:ALL" > /target/etc/sudoers.d/{{ iso_username }}
+chmod 440 /target/etc/sudoers.d/{{ iso_username }}

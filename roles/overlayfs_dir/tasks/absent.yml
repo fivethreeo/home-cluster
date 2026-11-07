@@ -1,0 +1,13 @@
+---
+- name: Unmount host ISO OverlayFS
+  become: true
+  ansible.builtin.shell:
+    cmd: >-
+      mountpoint -q {{ overlayfs_merged_dir | quote }} &&
+      umount {{ overlayfs_merged_dir | quote }} || true
+  changed_when: true
+
+- name: Remove host OverlayFS workspace
+  ansible.builtin.file:
+    path: "{{ overlayfs_host_dir }}"
+    state: absent

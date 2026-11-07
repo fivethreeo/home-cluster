@@ -1,0 +1,7 @@
+set default="0"
+set timeout=5
+
+menuentry "Automated Install" {
+  linux /install.amd/vmlinuz auto=true priority=critical locale={{ preseed_locale }} keymap={{ preseed_keymap }}
+  initrd /install.amd/initrd.gz
+}

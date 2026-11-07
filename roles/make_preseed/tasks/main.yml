@@ -1,0 +1,6 @@
+---
+- name: Render host preseed configuration
+  ansible.builtin.template:
+    src: preseed.cfg.j2
+    dest: "{{ preseed_path }}"
+    mode: "0600"

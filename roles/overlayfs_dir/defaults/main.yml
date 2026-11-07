@@ -1,0 +1,8 @@
+---
+overlayfs_state: mounted
+overlayfs_name: "{{ iso_build.hostname }}"
+overlayfs_host_dir: "{{ iso_work_dir }}/hosts/{{ overlayfs_name }}"
+overlayfs_upper_dir: "{{ overlayfs_host_dir }}/upper"
+overlayfs_work_dir: "{{ overlayfs_host_dir }}/work"
+overlayfs_merged_dir: "{{ overlayfs_host_dir }}/iso-extract"
+overlayfs_lower_dir: "{{ remaster_iso_extract_dir }}"

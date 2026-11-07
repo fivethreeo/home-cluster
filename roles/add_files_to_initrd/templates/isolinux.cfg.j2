@@ -1,0 +1,6 @@
+DEFAULT install
+TIMEOUT 1
+
+LABEL install
+  KERNEL /install.amd/vmlinuz
+  APPEND auto=true priority=critical initrd=/install.amd/initrd.gz locale={{ preseed_locale }} keymap={{ preseed_keymap }}

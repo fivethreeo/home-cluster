@@ -1,0 +1,59 @@
+---
+- name: Build preseeded Debian netinst ISOs
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars_files:
+    - iso-builds.yml
+  roles:
+    - role: download_netinst_iso
+    - role: remaster_iso
+      vars:
+        remaster_iso_action: extract
+
+  tasks:
+    - name: Read configured keyboard layout
+      ansible.builtin.slurp:
+        src: /etc/default/keyboard
+      register: keyboard_defaults
+
+    - name: Set ISO keyboard layout
+      ansible.builtin.set_fact:
+        iso_keymap: >-
+          {{
+            (
+              keyboard_defaults.content
+              | b64decode
+              | regex_findall('(?m)^XKBLAYOUT="([^"]+)"')
+              | first
+            )
+            | default('us', true)
+          }}
+
+    - name: Read configured timezone
+      ansible.builtin.command:
+        cmd: timedatectl show --property=Timezone --value
+      register: timezone
+      changed_when: false
+
+    - name: Set ISO timezone
+      ansible.builtin.set_fact:
+        iso_timezone: "{{ timezone.stdout | default('UTC', true) }}"
+
+    - name: Validate ISO build definitions
+      ansible.builtin.assert:
+        that:
+          - item.hostname is match('^[a-z0-9][a-z0-9-]*$')
+          - item.group in iso_groups
+          - (item.ip_suffix | string) is match('^([1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])$')
+        fail_msg: "Each ISO build requires a DNS-safe hostname, group, and IP suffix from 1 through 254."
+      loop: "{{ iso_builds }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+
+    - name: Build host ISO
+      ansible.builtin.include_tasks: tasks/build-host-iso.yml
+      loop: "{{ iso_builds }}"
+      loop_control:
+        loop_var: iso_build
+        label: "{{ iso_build.hostname }}"

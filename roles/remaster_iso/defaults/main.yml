@@ -1,0 +1,5 @@
+---
+remaster_iso_action: extract
+remaster_iso_extract_dir: "{{ iso_work_dir }}/iso-extract"
+remaster_iso_host_dir: "{{ iso_work_dir }}/hosts/{{ iso_build.hostname }}"
+remaster_iso_output_path: "{{ iso_output_dir }}/{{ iso_build.hostname }}-debian-preseed.iso"

@@ -1,0 +1,83 @@
+---
+- name: Create initrd workspace
+  ansible.builtin.file:
+    path: "{{ initrd_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Unpack installer initrd
+  ansible.builtin.shell:
+    cmd: gzip -dc {{ initrd_gzip_path | quote }} | cpio -idmu --no-absolute-filenames
+    chdir: "{{ initrd_dir }}"
+    creates: "{{ initrd_dir }}/init"
+  args:
+    executable: /bin/bash
+
+- name: Add preseed configuration to initrd
+  ansible.builtin.copy:
+    src: "{{ preseed_path }}"
+    dest: "{{ initrd_dir }}/preseed.cfg"
+    mode: "0600"
+    remote_src: true
+
+- name: Add authorized SSH key to initrd
+  ansible.builtin.copy:
+    content: "{{ initrd_authorized_key }}\n"
+    dest: "{{ initrd_dir }}/authorized_keys"
+    mode: "0600"
+  when: initrd_authorized_key | length > 0
+
+- name: Add installer late command to initrd
+  ansible.builtin.template:
+    src: late_command.sh.j2
+    dest: "{{ initrd_dir }}/late_command.sh"
+    mode: "0755"
+
+- name: Validate group initrd file paths
+  ansible.builtin.assert:
+    that:
+      - item.source is defined
+      - item.destination is defined
+      - item.destination is match('^(?!/)(?!.*(?:^|/)\.\.(?:/|$)).+$')
+    fail_msg: "Group initrd files require a source and an initrd-relative destination without '..'."
+  loop: "{{ initrd_extra_files }}"
+  loop_control:
+    label: "{{ item.destination | default(item.source | default('unknown')) }}"
+
+- name: Create directories for group initrd files
+  ansible.builtin.file:
+    path: "{{ initrd_dir }}/{{ item.destination | dirname }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ initrd_extra_files }}"
+  loop_control:
+    label: "{{ item.destination }}"
+
+- name: Add group files to initrd
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/{{ item.source }}"
+    dest: "{{ initrd_dir }}/{{ item.destination }}"
+    mode: "{{ item.mode | default(omit) }}"
+  loop: "{{ initrd_extra_files }}"
+  loop_control:
+    label: "{{ item.destination }}"
+
+- name: Repack installer initrd
+  ansible.builtin.shell:
+    cmd: find . -print0 | cpio --null -o -H newc | gzip -9 > {{ initrd_gzip_path | quote }}
+    chdir: "{{ initrd_dir }}"
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: Configure BIOS installer boot entry
+  ansible.builtin.template:
+    src: isolinux.cfg.j2
+    dest: "{{ overlayfs_merged_dir }}/isolinux/isolinux.cfg"
+    mode: "0644"
+
+- name: Configure UEFI installer boot entry
+  ansible.builtin.template:
+    src: grub.cfg.j2
+    dest: "{{ overlayfs_merged_dir }}/boot/grub/grub.cfg"
+    mode: "0644"

@@ -1,0 +1,3 @@
+---
+- name: Manage OverlayFS workspace
+  ansible.builtin.include_tasks: "{{ overlayfs_state }}.yml"

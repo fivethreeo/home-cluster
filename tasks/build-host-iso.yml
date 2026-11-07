@@ -1,0 +1,70 @@
+---
+- name: Select network settings for {{ iso_build.hostname }}
+  ansible.builtin.set_fact:
+    iso_network: "{{ iso_groups[iso_build['group']] }}"
+    iso_host_work_dir: "{{ iso_work_dir }}/hosts/{{ iso_build.hostname }}"
+
+- name: Validate network settings for {{ iso_build.hostname }}
+  ansible.builtin.assert:
+    that:
+      - ((iso_network.ip_prefix + '.' + (iso_build.ip_suffix | string)) | ansible.utils.ipaddr('ipv4')) is not false
+      - ((iso_network.ip_prefix + '.' + (iso_build.ip_suffix | string) + '/' + iso_network.netmask) | ansible.utils.ipaddr('network')) is not false
+      - (iso_network.gateway | ansible.utils.ipaddr('ipv4')) is not false
+      - iso_network.nameservers | length > 0
+    fail_msg: "The {{ iso_build.group }} network group has invalid IPv4 settings."
+
+- name: Build ISO for {{ iso_build.hostname }}
+  block:
+    - name: Create host OverlayFS workspace
+      ansible.builtin.include_role:
+        name: overlayfs_dir
+        apply:
+          become: true
+      vars:
+        overlayfs_name: "{{ iso_build.hostname }}"
+        overlayfs_state: mounted
+        overlayfs_lower_dir: "{{ iso_work_dir }}/iso-extract"
+
+    - name: Create host preseed file
+      ansible.builtin.include_role:
+        name: make_preseed
+        apply:
+          become: true
+      vars:
+        preseed_path: "{{ iso_host_work_dir }}/preseed.cfg"
+
+    - name: Add host files to installer initrd
+      ansible.builtin.include_role:
+        name: add_files_to_initrd
+        apply:
+          become: true
+      vars:
+        initrd_gzip_path: "{{ iso_host_work_dir }}/iso-extract/install.amd/initrd.gz"
+        initrd_dir: "{{ iso_host_work_dir }}/initrd"
+        overlayfs_merged_dir: "{{ iso_host_work_dir }}/iso-extract"
+        preseed_path: "{{ iso_host_work_dir }}/preseed.cfg"
+        preseed_locale: "{{ iso_locale }}"
+        preseed_keymap: "{{ iso_keymap }}"
+        initrd_extra_files: >-
+          {{
+            (iso_network.extra_initrd_files | default([]))
+            + (iso_build.extra_initrd_files | default([]))
+          }}
+
+    - name: Repack host ISO
+      ansible.builtin.include_role:
+        name: remaster_iso
+        apply:
+          become: true
+      vars:
+        remaster_iso_action: compose
+        remaster_iso_host_dir: "{{ iso_host_work_dir }}"
+  always:
+    - name: Remove host OverlayFS workspace
+      ansible.builtin.include_role:
+        name: overlayfs_dir
+        apply:
+          become: true
+      vars:
+        overlayfs_name: "{{ iso_build.hostname }}"
+        overlayfs_state: absent

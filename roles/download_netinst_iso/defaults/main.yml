@@ -1,0 +1,3 @@
+---
+iso_work_dir: "{{ playbook_dir }}/.iso-build"
+debian_netinst_directory_url: https://cdimage.debian.org/debian-cd/current/amd64/iso-cd

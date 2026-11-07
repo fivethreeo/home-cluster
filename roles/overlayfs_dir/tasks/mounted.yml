@@ -1,0 +1,20 @@
+---
+- name: Create OverlayFS workspace directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ overlayfs_upper_dir }}"
+    - "{{ overlayfs_work_dir }}"
+    - "{{ overlayfs_merged_dir }}"
+
+- name: Mount host ISO OverlayFS
+  become: true
+  ansible.builtin.shell:
+    cmd: >-
+      mountpoint -q {{ overlayfs_merged_dir | quote }} ||
+      mount -t overlay overlay
+      -o lowerdir={{ overlayfs_lower_dir | quote }},upperdir={{ overlayfs_upper_dir | quote }},workdir={{ overlayfs_work_dir | quote }}
+      {{ overlayfs_merged_dir | quote }}
+  changed_when: true

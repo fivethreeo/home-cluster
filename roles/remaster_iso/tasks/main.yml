@@ -1,0 +1,12 @@
+---
+- name: Install remaster ISO dependencies
+  become: true
+  ansible.builtin.apt:
+    name:
+      - remaster-iso
+      - cpio
+      - gzip
+    state: present
+
+- name: Run remaster ISO action
+  ansible.builtin.include_tasks: "{{ remaster_iso_action }}.yml"

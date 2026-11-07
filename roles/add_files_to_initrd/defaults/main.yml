@@ -1,0 +1,5 @@
+---
+initrd_gzip_path: "{{ overlayfs_merged_dir }}/install.amd/initrd.gz"
+initrd_dir: "{{ remaster_iso_host_dir }}/initrd"
+initrd_authorized_key: "{{ lookup('file', iso_authorized_key_file, errors='ignore') }}"
+initrd_extra_files: []

@@ -1,0 +1,34 @@
+---
+# Define only the host-specific values for each unattended installer ISO.
+iso_builds:
+  - hostname: sugar
+    ip_suffix: 100
+    group: lan
+    # Optional files copied into this host's initrd after group files.
+    extra_initrd_files: []
+
+# Define shared network settings once per group.
+iso_groups:
+  lan:
+    ip_prefix: "192.168.1"
+    netmask: 255.255.255.0
+    gateway: 192.168.1.1
+    nameservers:
+      - 192.168.1.2
+      - 192.168.1.1
+    # Files are relative to the playbook directory and are copied into initrd.
+    extra_initrd_files: []
+
+# These values apply to every image unless overridden on the command line.
+iso_domain: fiveo.lan
+iso_work_dir: "{{ playbook_dir }}/.iso-build"
+iso_output_dir: "{{ playbook_dir }}/output"
+iso_locale: "{{ ansible_facts['env']['LANG'] | default('en_US.UTF-8') }}"
+iso_authorized_key_file: "{{ lookup('env', 'HOME') }}/.ssh/id_ecdsa_sugar.pub"
+iso_username: sugar
+iso_packages:
+  - openssh-server
+  - sudo
+  - vim
+  - curl
+  - net-tools

@@ -1,0 +1,7 @@
+---
+- name: Extract Debian netinst ISO
+  become: true
+  ansible.builtin.command:
+    cmd: remaster-extract --iso "{{ debian_netinst_path }}"
+    chdir: "{{ iso_work_dir }}"
+    creates: "{{ remaster_iso_extract_dir }}/install.amd/initrd.gz"

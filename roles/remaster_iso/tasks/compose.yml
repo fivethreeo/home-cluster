@@ -1,0 +1,40 @@
+---
+- name: Create ISO output directory
+  ansible.builtin.file:
+    path: "{{ iso_output_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Compose preseeded Debian ISO
+  ansible.builtin.command:
+    argv:
+      - remaster-compose
+      - --iso-target-name
+      - "{{ iso_build.hostname }}-debian-preseed"
+      - --iso-target-title
+      - Debian Auto Install
+    chdir: "{{ remaster_iso_host_dir }}"
+  changed_when: true
+
+- name: Copy newest composed ISO and create checksum
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      latest_iso="$(find . -maxdepth 1 -type f -name '*-debian-preseed.iso' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+      test -n "$latest_iso"
+      install -m 0644 "$latest_iso" {{ remaster_iso_output_path | quote }}
+      cd {{ iso_output_dir | quote }}
+      md5sum {{ (iso_build.hostname + '-debian-preseed.iso') | quote }} > {{ (iso_build.hostname + '-debian-preseed.iso.md5sum') | quote }}
+    executable: /bin/bash
+    chdir: "{{ remaster_iso_host_dir }}"
+  changed_when: true
+
+- name: Restore generated ISO ownership
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: "{{ ansible_facts['user_id'] }}"
+    group: "{{ ansible_facts['user_gid'] }}"
+    mode: "0644"
+  loop:
+    - "{{ remaster_iso_output_path }}"
+    - "{{ remaster_iso_output_path }}.md5sum"
