@@ -206,6 +206,10 @@ class ProsangoEnvironmentTests(unittest.TestCase):
         rendered = environment.get_template("prosango.env.j2").render(
             app_name=variables.get("app_name", "example"),
             app_django_location=variables.get("app_django_location", "/"),
+            app_ts_backend_enabled=variables.get("app_ts_backend_enabled", False),
+            app_ts_backend_location=variables.get("app_ts_backend_location", "/api/"),
+            app_ts_ws_backend_enabled=variables.get("app_ts_ws_backend_enabled", False),
+            app_ts_ws_backend_location=variables.get("app_ts_ws_backend_location", "/ws/"),
             app_memcached_enabled=variables.get("app_memcached_enabled", False),
             app_memcached_location="127.0.0.1:11211",
             django_secret_key=secret,
@@ -243,6 +247,16 @@ class ProsangoEnvironmentTests(unittest.TestCase):
     def test_django_mount_prefix_is_empty_for_root_and_configured_for_subpath(self):
         self.assertEqual(self.render()["DJANGO_SCRIPT_NAME"], "")
         self.assertEqual(self.render(app_django_location="/django/")["DJANGO_SCRIPT_NAME"], "/django")
+
+    def test_backend_urls_use_public_gateway_prefixes_and_empty_values_when_disabled(self):
+        for http_enabled, ws_enabled in [(False, False), (True, False), (False, True), (True, True)]:
+            with self.subTest(http_enabled=http_enabled, ws_enabled=ws_enabled):
+                values = self.render(
+                    app_ts_backend_enabled=http_enabled, app_ts_backend_location="/v1/",
+                    app_ts_ws_backend_enabled=ws_enabled, app_ts_ws_backend_location="/socket/",
+                )
+                self.assertEqual(values["DJANGO_TS_BACKEND_URL"], "/v1/" if http_enabled else "")
+                self.assertEqual(values["DJANGO_TS_WS_BACKEND_URL"], "/socket/" if ws_enabled else "")
 
 
 class CeleryServiceTests(unittest.TestCase):

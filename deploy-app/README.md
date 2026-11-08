@@ -339,6 +339,12 @@ have a slash-adding redirect; use the trailing slash directly for WebSockets.
 Django can also use `/django/`; deployment sets its script prefix so reversed
 admin URLs remain correct. Static/media stay at `/static/` and `/media/`.
 
+Django's environment also receives `DJANGO_TS_BACKEND_URL` and
+`DJANGO_TS_WS_BACKEND_URL`: the enabled components' public location prefixes,
+or empty values when disabled. These appear as `data-ts-backend-url` and
+`data-ts-ws-backend-url` on public-page bodies. They refer to the gateway paths,
+not private backend servers, and work with custom locations and gateway TLS.
+
 ### Separate servers behind one Nginx gateway
 
 Run the playbook with `--limit` selecting only the gateway. Component hosts must
