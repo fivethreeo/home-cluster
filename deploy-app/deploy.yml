@@ -1,0 +1,7 @@
+---
+- name: Configure application resources
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - role: application

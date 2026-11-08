@@ -8,6 +8,10 @@ ansible-galaxy collection install -r requirements.yml
 ansible-playbook build-isos.yml
 ```
 
+The installer includes Python 3 so installed hosts can be managed with Ansible.
+Rebuild the ISOs after changing `iso_packages`; existing installations are not
+updated by rebuilding an image.
+
 Start an image with libvirt after it has been built:
 
 ```sh

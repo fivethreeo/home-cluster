@@ -1,0 +1,110 @@
+---
+- name: Configure enabled Celery services
+  when: celery_enabled | bool or celery_beat_enabled | bool
+  block:
+    - name: Validate Celery application and paths
+      ansible.builtin.assert:
+        that:
+          - celery_app is match('^[a-zA-Z_][a-zA-Z0-9_.:]*$')
+          - app_code_dir is match('^/[a-zA-Z0-9_./-]+$')
+          - app_virtualenv is match('^/[a-zA-Z0-9_./-]+$')
+          - app_environment_file is match('^/[a-zA-Z0-9_./-]+$')
+          - app_secrets_dir is match('^/[a-zA-Z0-9_./-]+$')
+          - celery_broker_host is match('^[a-zA-Z0-9.:-]+$')
+        fail_msg: Set celery_app and absolute application paths before enabling Celery.
+
+    - name: Check installed application code
+      ansible.builtin.stat:
+        path: "{{ app_code_dir }}"
+        follow: true
+      register: app_celery_code
+
+    - name: Check installed Celery executable
+      ansible.builtin.stat:
+        path: "{{ app_virtualenv }}/bin/celery"
+        follow: true
+      register: app_celery_executable
+
+    - name: Check application runtime environment
+      ansible.builtin.stat:
+        path: "{{ app_environment_file }}"
+        follow: true
+      register: app_celery_environment
+
+    - name: Require application installation before starting Celery
+      ansible.builtin.assert:
+        that:
+          - app_celery_code.stat.isdir | default(false)
+          - app_celery_executable.stat.isreg | default(false)
+          - app_celery_executable.stat.executable | default(false)
+          - app_celery_environment.stat.isreg | default(false)
+        fail_msg: >-
+          Install application code, Celery in app_virtualenv, and a protected
+          systemd-compatible app_environment_file before enabling these services.
+
+    - name: Create persistent application Celery state directory
+      ansible.builtin.file:
+        path: "/var/lib/celery/{{ app_name }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0750"
+
+    - name: Write private Celery broker credentials
+      ansible.builtin.template:
+        src: celery.env.j2
+        dest: "{{ app_secrets_dir }}/celery.env"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      notify:
+        - Restart application Celery worker
+        - Restart application Celery Beat
+
+- name: Install application Celery worker service
+  ansible.builtin.template:
+    src: celery.service.j2
+    dest: "/etc/systemd/system/celery-{{ app_name }}.service"
+    mode: "0644"
+  vars:
+    celery_mode: worker
+  when: celery_enabled | bool
+  register: app_celery_worker_unit
+  notify: Restart application Celery worker
+
+- name: Install application Celery Beat service
+  ansible.builtin.template:
+    src: celery.service.j2
+    dest: "/etc/systemd/system/celerybeat-{{ app_name }}.service"
+    mode: "0644"
+  vars:
+    celery_mode: beat
+  when: celery_beat_enabled | bool
+  register: app_celery_beat_unit
+  notify: Restart application Celery Beat
+
+- name: Reload systemd after Celery unit changes
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: app_celery_worker_unit.changed or app_celery_beat_unit.changed
+
+- name: Check for managed Celery services
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ item.name }}-{{ app_name }}.service"
+  loop:
+    - name: celery
+      enabled: "{{ celery_enabled | bool }}"
+    - name: celerybeat
+      enabled: "{{ celery_beat_enabled | bool }}"
+  register: app_celery_units
+
+- name: Enable or disable managed Celery services
+  ansible.builtin.systemd_service:
+    name: "{{ item.item.name }}-{{ app_name }}.service"
+    enabled: "{{ item.item.enabled }}"
+    state: "{{ 'started' if item.item.enabled else 'stopped' }}"
+  loop: "{{ app_celery_units.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.stat.exists

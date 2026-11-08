@@ -1,0 +1,56 @@
+---
+- name: Deploy Prosango code and prebuilt frontend
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    app_deploy_code: true
+    app_source_dir: "{{ playbook_dir }}/../../prosango-project"
+    app_frontend_dist: "{{ app_source_dir }}/typescript-frontend/dist"
+    app_repository_dir: "{{ app_home }}/current"
+    app_code_dir: "{{ app_repository_dir }}/django-project"
+    app_upstream: "http://{{ app_bind }}"
+    celery_app: prosango
+
+  tasks:
+    - name: Deploy the application using a temporary controller bundle
+      block:
+        - name: Allocate controller code bundle
+          ansible.builtin.tempfile:
+            state: file
+            suffix: .tar.gz
+          delegate_to: localhost
+          become: false
+          register: app_code_bundle
+
+        - name: Package Django source and already-built frontend
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ playbook_dir }}/files/package-prosango.py"
+              - "{{ app_source_dir }}"
+              - "{{ app_frontend_dist }}"
+              - "{{ app_code_bundle.path }}"
+          delegate_to: localhost
+          become: false
+
+        - name: Identify this code and asset release
+          ansible.builtin.stat:
+            path: "{{ app_code_bundle.path }}"
+            checksum_algorithm: sha256
+          delegate_to: localhost
+          become: false
+          register: app_bundle_metadata
+
+        - name: Configure resources and deploy the release
+          ansible.builtin.include_role:
+            name: application
+
+      always:
+        - name: Remove temporary controller bundle
+          ansible.builtin.file:
+            path: "{{ app_code_bundle.path }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+          when: app_code_bundle.path is defined

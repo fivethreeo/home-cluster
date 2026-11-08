@@ -1,0 +1,173 @@
+---
+- name: Validate application configuration
+  ansible.builtin.assert:
+    that:
+      - app_name is match('^[a-z][a-z0-9_]{0,30}$')
+      - app_user is match('^[a-z][a-z0-9_]{0,30}$')
+      - app_user not in ['root', 'nobody', 'postgres', 'rabbitmq', 'www-data']
+      - app_user != (ansible_user | default('root'))
+      - app_database is match('^[a-z][a-z0-9_]{0,62}$')
+      - app_database_user is match('^[a-z][a-z0-9_]{0,62}$')
+      - app_rabbitmq_vhost | length > 0
+      - app_rabbitmq_vhost != '/'
+      - app_rabbitmq_user | length > 0
+      - app_rabbitmq_user != 'guest'
+      - app_domains | length > 0
+      - app_domains | reject('match', '^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$') | list | length == 0
+      - app_upstream is match('^https?://[a-zA-Z0-9_.:-]+$')
+      - app_postgresql_host in hostvars
+      - app_rabbitmq_host in hostvars
+      - app_postgresql_client_addresses | length > 0
+      - >-
+        app_postgresql_host == inventory_hostname or
+        app_postgresql_client_addresses != ['127.0.0.1/32', '::1/128']
+    fail_msg: >-
+      Set application names, domains and inventory service hosts. For a remote
+      database, explicitly set app_postgresql_client_addresses to the web host's
+      source address/CIDR.
+
+- name: Require application passwords
+  ansible.builtin.assert:
+    that:
+      - app_database_password | length > 0
+      - app_rabbitmq_password | length > 0
+    fail_msg: Supply application passwords through Ansible Vault.
+  no_log: true
+
+- name: Validate DNS and certificate configuration
+  ansible.builtin.assert:
+    that:
+      - not (ddns_enabled | bool) or ddns_domains | length > 0
+      - not (certbot_enabled | bool) or certbot_email | length > 0
+      - not (certbot_enabled | bool) or certbot_domains | length > 0
+      - not (certbot_enabled | bool) or app_domains | difference(certbot_domains) | length == 0
+      - ddns_domains | reject('match', '^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$') | list | length == 0
+      - certbot_domains | reject('match', '^[a-zA-Z0-9][a-zA-Z0-9.*-]*[a-zA-Z0-9]$') | list | length == 0
+    fail_msg: Set valid DNS names and certificate email/domains before enabling DDNS or Certbot.
+
+- name: Require Domeneshop credentials
+  ansible.builtin.assert:
+    that:
+      - domeneshop_token | length > 0
+      - domeneshop_secret | length > 0
+      - "'\n' not in domeneshop_token"
+      - "'\n' not in domeneshop_secret"
+    fail_msg: Supply Domeneshop credentials through Ansible Vault.
+  when: ddns_enabled | bool or certbot_enabled | bool
+  no_log: true
+
+- name: Create application group
+  ansible.builtin.group:
+    name: "{{ app_user }}"
+
+- name: Create application Linux user
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    group: "{{ app_user }}"
+    home: "{{ app_home }}"
+    shell: /usr/sbin/nologin
+    password_lock: true
+    create_home: true
+
+- name: Allow Nginx to traverse the application directory
+  ansible.builtin.file:
+    path: "{{ app_home }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: www-data
+    mode: "0750"
+
+- name: Allow Nginx to read Django-created application uploads
+  ansible.builtin.user:
+    name: www-data
+    groups: "{{ app_user }}"
+    append: true
+  when: app_deploy_code | bool
+  notify: Apply application nginx configuration
+
+- name: Create application static directory
+  ansible.builtin.file:
+    path: "{{ app_home }}/static"
+    state: directory
+    owner: "{{ app_user }}"
+    group: www-data
+    mode: "2750"
+
+- name: Create application media directory
+  ansible.builtin.file:
+    path: "{{ app_home }}/media"
+    state: directory
+    owner: "{{ app_user }}"
+    group: www-data
+    mode: "2750"
+  when: app_media_enabled | bool
+
+- name: Validate code deployment configuration
+  ansible.builtin.assert:
+    that:
+      - app_repository_dir is match('^/[a-zA-Z0-9_./-]+$')
+      - app_code_dir is match('^/[a-zA-Z0-9_./-]+$')
+      - app_virtualenv is match('^/[a-zA-Z0-9_./-]+$')
+      - app_environment_file is match('^/[a-zA-Z0-9_./-]+$')
+      - app_bind is match('^127[.]0[.]0[.]1:[0-9]+$')
+      - app_workers | int > 0
+      - django_secret_key | length > 0
+      - "'\n' not in django_secret_key"
+      - "'\r' not in django_secret_key"
+      - "'\t' not in django_secret_key"
+      - "'\n' not in app_database_password"
+      - "'\r' not in app_database_password"
+      - "'\t' not in app_database_password"
+    fail_msg: Supply safe deployment paths, a loopback backend address and django_secret_key in Vault.
+  when: app_deploy_code | bool
+  no_log: true
+
+- name: Inspect managed services before code deployment
+  ansible.builtin.service_facts:
+  when: app_deploy_code | bool
+
+- name: Stop application processes before updating code or credentials
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+  loop:
+    - "gunicorn-{{ app_name }}.service"
+    - "celery-{{ app_name }}.service"
+    - "celerybeat-{{ app_name }}.service"
+  when:
+    - app_deploy_code | bool
+    - item in ansible_facts.services
+    - ansible_facts.services[item].state == 'running'
+
+- name: Configure application database
+  ansible.builtin.include_tasks: postgresql.yml
+
+- name: Configure application RabbitMQ resources
+  ansible.builtin.include_tasks: rabbitmq.yml
+
+- name: Install code, runtime environment and static files
+  ansible.builtin.include_tasks: code.yml
+  when: app_deploy_code | bool
+
+- name: Create private deployment configuration directory
+  ansible.builtin.file:
+    path: "{{ app_secrets_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: >-
+    ddns_enabled | bool or certbot_enabled | bool or
+    celery_enabled | bool or celery_beat_enabled | bool
+
+- name: Configure Domeneshop dynamic DNS
+  ansible.builtin.include_tasks: ddns.yml
+
+- name: Configure application certificates
+  ansible.builtin.include_tasks: certbot.yml
+
+- name: Configure optional application Celery services
+  ansible.builtin.include_tasks: celery.yml
+
+- name: Configure application Nginx site
+  ansible.builtin.include_tasks: nginx.yml

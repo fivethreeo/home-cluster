@@ -1,0 +1,57 @@
+---
+app_name: ""
+app_user: "{{ app_name }}"
+app_home: "/srv/{{ app_name }}"
+app_domains: []
+app_upstream: http://127.0.0.1:8000
+app_media_enabled: false
+app_deploy_code: false
+app_bind: 127.0.0.1:8000
+app_workers: 2
+django_secret_key: ""
+celery_result_backend: ""
+app_database_host: >-
+  {{ '127.0.0.1' if app_postgresql_host == inventory_hostname
+     else hostvars[app_postgresql_host]['ansible_host'] | default(app_postgresql_host) }}
+
+celery_enabled: false
+celery_beat_enabled: false
+celery_app: ""
+app_code_dir: "{{ app_home }}/current"
+app_virtualenv: "{{ app_home }}/.venv"
+app_environment_file: "{{ app_home }}/.env"
+celery_broker_host: >-
+  {{ '127.0.0.1' if app_rabbitmq_host == inventory_hostname
+     else hostvars[app_rabbitmq_host]['ansible_host'] | default(app_rabbitmq_host) }}
+
+# Host values are inventory names, not connection addresses.
+app_postgresql_host: "{{ inventory_hostname }}"
+app_database: "{{ app_name }}"
+app_database_user: "{{ app_name }}"
+app_database_password: ""
+app_postgresql_client_addresses:
+  - 127.0.0.1/32
+  - ::1/128
+# Leave existing listeners unchanged unless explicitly configured.
+app_postgresql_listen_addresses: ""
+
+app_rabbitmq_host: "{{ inventory_hostname }}"
+app_rabbitmq_vhost: "{{ app_name }}"
+app_rabbitmq_user: "{{ app_name }}"
+app_rabbitmq_password: ""
+
+ddns_enabled: false
+ddns_domains: "{{ app_domains }}"
+# Empty means Domeneshop uses the requesting host's public IP.
+ddns_ip: ""
+domeneshop_token: ""
+domeneshop_secret: ""
+
+certbot_enabled: false
+certbot_email: ""
+certbot_domains: "{{ app_domains }}"
+certbot_propagation_seconds: 120
+app_certbot_config_dir: "/etc/letsencrypt/{{ app_name }}"
+app_certbot_work_dir: "/var/lib/letsencrypt/{{ app_name }}"
+app_certbot_logs_dir: "/var/log/letsencrypt/{{ app_name }}"
+app_secrets_dir: "/etc/ansible-app/{{ app_name }}"

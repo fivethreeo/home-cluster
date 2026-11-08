@@ -1,0 +1,77 @@
+---
+- name: Configure PostgreSQL on its selected host
+  delegate_to: "{{ app_postgresql_host }}"
+  block:
+    - name: Install PostgreSQL module prerequisites
+      ansible.builtin.apt:
+        name:
+          - python3-psycopg2
+          - acl
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Configure database as PostgreSQL administrator
+      become_user: postgres
+      block:
+        - name: Create application database user
+          community.postgresql.postgresql_user:
+            name: "{{ app_database_user }}"
+            password: "{{ app_database_password }}"
+            role_attr_flags: LOGIN,NOSUPERUSER,NOCREATEDB,NOCREATEROLE,NOREPLICATION
+          environment:
+            PGOPTIONS: "-c password_encryption=scram-sha-256"
+          no_log: true
+
+        - name: Create application database
+          community.postgresql.postgresql_db:
+            name: "{{ app_database }}"
+            owner: "{{ app_database_user }}"
+
+        - name: Find active PostgreSQL HBA configuration
+          community.postgresql.postgresql_query:
+            login_db: postgres
+            query: SHOW hba_file
+          register: app_hba_configuration
+          changed_when: false
+
+        - name: Validate application database source networks
+          ansible.builtin.command:
+            argv: >-
+              {{ ['/usr/bin/python3', '-c',
+                  'import ipaddress, json, sys; print(json.dumps([str(ipaddress.ip_network(address, strict=False)) for address in sys.argv[1:]]))']
+                 + app_postgresql_client_addresses }}
+          register: app_hba_networks
+          changed_when: false
+          check_mode: false
+
+        - name: Allow application database password authentication
+          ansible.builtin.blockinfile:
+            path: "{{ app_hba_configuration.query_result[0].hba_file }}"
+            marker: "# {mark} ANSIBLE APPLICATION {{ app_name }}"
+            insertbefore: BOF
+            block: |
+              {% for address in app_hba_networks.stdout | from_json %}
+              host {{ app_database }} {{ app_database_user }} {{ address }} scram-sha-256
+              {% endfor %}
+            backup: true
+          notify: Reload application PostgreSQL
+
+        - name: Check PostgreSQL HBA syntax
+          community.postgresql.postgresql_query:
+            login_db: postgres
+            query: SELECT line_number, error FROM pg_hba_file_rules WHERE error IS NOT NULL
+          register: app_hba_errors
+          changed_when: false
+
+        - name: Require valid PostgreSQL HBA configuration
+          ansible.builtin.assert:
+            that: app_hba_errors.query_result | length == 0
+            fail_msg: "PostgreSQL rejected pg_hba.conf: {{ app_hba_errors.query_result }}"
+
+        - name: Configure explicitly requested PostgreSQL listeners
+          community.postgresql.postgresql_alter_system:
+            param: listen_addresses
+            value: "{{ app_postgresql_listen_addresses }}"
+          when: app_postgresql_listen_addresses | length > 0
+          notify: Restart application PostgreSQL

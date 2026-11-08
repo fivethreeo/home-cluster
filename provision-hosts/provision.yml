@@ -1,0 +1,12 @@
+---
+- name: Provision infrastructure services
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - role: rabbitmq
+      when: rabbitmq_enabled | bool
+    - role: postgresql
+      when: postgresql_enabled | bool
+    - role: nginx
+      when: nginx_enabled | bool

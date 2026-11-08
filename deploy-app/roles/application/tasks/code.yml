@@ -1,0 +1,134 @@
+---
+- name: Install Python deployment prerequisites
+  ansible.builtin.apt:
+    name:
+      - python3-packaging
+      - python3-venv
+      - acl
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Apply PostgreSQL authentication and listener changes before migrations
+  ansible.builtin.meta: flush_handlers
+
+- name: Create immutable release directory
+  ansible.builtin.file:
+    path: "{{ app_home }}/releases/{{ app_bundle_metadata.stat.checksum }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0750"
+
+- name: Upload Django source and prebuilt frontend
+  ansible.builtin.unarchive:
+    src: "{{ app_code_bundle.path }}"
+    dest: "{{ app_home }}/releases/{{ app_bundle_metadata.stat.checksum }}"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "u=rwX,g=rX,o="
+
+- name: Select the deployed release
+  ansible.builtin.file:
+    src: "{{ app_home }}/releases/{{ app_bundle_metadata.stat.checksum }}"
+    dest: "{{ app_repository_dir }}"
+    state: link
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+
+- name: Install application Python dependencies
+  become_user: "{{ app_user }}"
+  ansible.builtin.pip:
+    requirements: "{{ app_code_dir }}/requirements.txt"
+    virtualenv: "{{ app_virtualenv }}"
+    virtualenv_command: /usr/bin/python3 -m venv
+
+- name: Write protected Prosango runtime configuration
+  ansible.builtin.template:
+    src: prosango.env.j2
+    dest: "{{ app_environment_file }}"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0600"
+  no_log: true
+
+- name: Check Django configuration
+  become_user: "{{ app_user }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ app_virtualenv }}/bin/python"
+      - manage.py
+      - check
+    chdir: "{{ app_code_dir }}"
+  environment:
+    DJANGO_ENV_FILE: "{{ app_environment_file }}"
+  changed_when: false
+  no_log: true
+
+- name: Apply database migrations
+  become_user: "{{ app_user }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ app_virtualenv }}/bin/python"
+      - manage.py
+      - migrate
+      - --noinput
+    chdir: "{{ app_code_dir }}"
+  environment:
+    DJANGO_ENV_FILE: "{{ app_environment_file }}"
+  register: app_migrations
+  changed_when: "'No migrations to apply.' not in app_migrations.stdout"
+  no_log: true
+
+- name: Collect prebuilt frontend and Django static files
+  become_user: "{{ app_user }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ app_virtualenv }}/bin/python"
+      - manage.py
+      - collectstatic
+      - --noinput
+      - --clear
+    chdir: "{{ app_code_dir }}"
+  environment:
+    DJANGO_ENV_FILE: "{{ app_environment_file }}"
+  no_log: true
+
+- name: Allow Nginx to read all collected static files
+  ansible.builtin.file:
+    path: "{{ app_home }}/static"
+    state: directory
+    owner: "{{ app_user }}"
+    group: www-data
+    recurse: true
+
+- name: Install application Gunicorn service
+  ansible.builtin.template:
+    src: gunicorn.service.j2
+    dest: "/etc/systemd/system/gunicorn-{{ app_name }}.service"
+    mode: "0644"
+  register: app_gunicorn_unit
+
+- name: Enable and start the deployed backend
+  ansible.builtin.systemd_service:
+    name: "gunicorn-{{ app_name }}.service"
+    enabled: true
+    state: started
+    daemon_reload: "{{ app_gunicorn_unit.changed }}"
+
+- name: Wait for the backend socket
+  ansible.builtin.wait_for:
+    host: "{{ app_bind.split(':')[0] }}"
+    port: "{{ app_bind.split(':')[1] | int }}"
+    timeout: 30
+
+- name: Verify the deployed Django application responds
+  ansible.builtin.uri:
+    url: "http://{{ app_bind }}/"
+    headers:
+      Host: "{{ app_domains | first }}"
+    status_code: 200
+  register: app_backend_health
+  retries: 5
+  delay: 2
+  until: app_backend_health is succeeded

@@ -1,0 +1,29 @@
+---
+- name: Install RabbitMQ module prerequisites
+  ansible.builtin.apt:
+    name: python3-requests
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  delegate_to: "{{ app_rabbitmq_host }}"
+
+- name: Create application RabbitMQ virtual host
+  community.rabbitmq.rabbitmq_vhost:
+    name: "{{ app_rabbitmq_vhost }}"
+    state: present
+  delegate_to: "{{ app_rabbitmq_host }}"
+
+- name: Create application RabbitMQ user with isolated permissions
+  community.rabbitmq.rabbitmq_user:
+    user: "{{ app_rabbitmq_user }}"
+    password: "{{ app_rabbitmq_password }}"
+    update_password: always
+    tags: ""
+    permissions:
+      - vhost: "{{ app_rabbitmq_vhost }}"
+        configure_priv: .*
+        write_priv: .*
+        read_priv: .*
+    state: present
+  delegate_to: "{{ app_rabbitmq_host }}"
+  no_log: true

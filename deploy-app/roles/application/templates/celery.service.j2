@@ -1,0 +1,25 @@
+[Unit]
+Description=Celery {{ celery_mode }} for {{ app_name }}
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ app_code_dir }}
+EnvironmentFile={{ app_environment_file }}
+EnvironmentFile={{ app_secrets_dir }}/celery.env
+Environment=DJANGO_ENV_FILE={{ app_environment_file }}
+Environment=PYTHONUNBUFFERED=1
+ExecStart={{ app_virtualenv }}/bin/celery --app={{ celery_app }} {{ celery_mode }} --loglevel=INFO{% if celery_mode == 'beat' %} --schedule=/var/lib/celery/{{ app_name }}/celerybeat-schedule{% endif %}
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=300
+KillMode=mixed
+UMask=0027
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

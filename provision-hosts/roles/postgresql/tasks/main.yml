@@ -1,0 +1,11 @@
+---
+- name: Install PostgreSQL server
+  ansible.builtin.apt:
+    name: "{{ postgresql_package }}"
+    state: present
+
+- name: Enable and start PostgreSQL server
+  ansible.builtin.service:
+    name: postgresql
+    enabled: true
+    state: started

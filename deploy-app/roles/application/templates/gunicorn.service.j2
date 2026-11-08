@@ -1,0 +1,22 @@
+[Unit]
+Description=Prosango backend for {{ app_name }}
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ app_code_dir }}
+EnvironmentFile={{ app_environment_file }}
+Environment=DJANGO_ENV_FILE={{ app_environment_file }}
+ExecStart={{ app_virtualenv }}/bin/gunicorn prosango.wsgi:application --bind {{ app_bind }} --workers {{ app_workers }}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+KillMode=mixed
+UMask=0027
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

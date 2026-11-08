@@ -1,0 +1,111 @@
+---
+- name: Configure enabled Domeneshop certificates
+  when: certbot_enabled | bool
+  block:
+    - name: Install Python virtual environment support
+      ansible.builtin.apt:
+        name: python3-venv
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install Certbot and its Domeneshop plugin in a virtual environment
+      ansible.builtin.pip:
+        name:
+          - certbot
+          - certbot-dns-domeneshop
+        virtualenv: /opt/domeneshop-certbot/.venv
+        virtualenv_command: /usr/bin/python3 -m venv
+
+    - name: Write private Domeneshop certificate credentials
+      ansible.builtin.template:
+        src: domeneshop.ini.j2
+        dest: "{{ app_secrets_dir }}/domeneshop.ini"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Create application Certbot directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - "{{ app_certbot_config_dir }}"
+        - "{{ app_certbot_work_dir }}"
+        - "{{ app_certbot_logs_dir }}"
+
+    - name: Read existing certificate checksum
+      ansible.builtin.stat:
+        path: "{{ app_certbot_config_dir }}/live/{{ app_name }}/fullchain.pem"
+        follow: true
+      register: app_certificate_before
+
+    - name: Obtain or update application DNS-01 certificate
+      ansible.builtin.command:
+        cmd: >-
+          /opt/domeneshop-certbot/.venv/bin/certbot certonly
+          --authenticator dns-domeneshop
+          --dns-domeneshop-credentials {{ (app_secrets_dir + '/domeneshop.ini') | quote }}
+          --dns-domeneshop-propagation-seconds {{ certbot_propagation_seconds | int }}
+          --config-dir {{ app_certbot_config_dir | quote }}
+          --work-dir {{ app_certbot_work_dir | quote }}
+          --logs-dir {{ app_certbot_logs_dir | quote }}
+          --cert-name {{ app_name | quote }}
+          --non-interactive --agree-tos --keep-until-expiring --renew-with-new-domains
+          --email {{ certbot_email | quote }}
+          {% for domain in certbot_domains %}-d {{ domain | quote }} {% endfor %}
+      changed_when: false
+
+    - name: Read issued certificate checksum
+      ansible.builtin.stat:
+        path: "{{ app_certbot_config_dir }}/live/{{ app_name }}/fullchain.pem"
+        follow: true
+      register: app_certificate_after
+
+    - name: Detect changed application certificate
+      ansible.builtin.debug:
+        msg: Application certificate updated.
+      changed_when: >-
+        app_certificate_before.stat.checksum | default('') !=
+        app_certificate_after.stat.checksum | default('')
+      notify: Apply application nginx configuration
+
+    - name: Install application certificate renewal service
+      ansible.builtin.template:
+        src: certbot.service.j2
+        dest: "/etc/systemd/system/domeneshop-certbot-{{ app_name }}.service"
+        mode: "0644"
+      register: app_certbot_service
+
+    - name: Install application certificate renewal timer
+      ansible.builtin.template:
+        src: certbot.timer.j2
+        dest: "/etc/systemd/system/domeneshop-certbot-{{ app_name }}.timer"
+        mode: "0644"
+      register: app_certbot_timer
+
+    - name: Enable twice-daily application certificate renewal checks
+      ansible.builtin.systemd_service:
+        name: "domeneshop-certbot-{{ app_name }}.timer"
+        enabled: true
+        state: started
+        daemon_reload: "{{ app_certbot_service.changed or app_certbot_timer.changed }}"
+
+- name: Check for a previously managed certificate renewal timer
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/domeneshop-certbot-{{ app_name }}.timer"
+  register: app_existing_certbot_timer
+  when: not (certbot_enabled | bool)
+
+- name: Disable previously managed certificate renewals when opted out
+  ansible.builtin.systemd_service:
+    name: "domeneshop-certbot-{{ app_name }}.timer"
+    enabled: false
+    state: stopped
+  when:
+    - not (certbot_enabled | bool)
+    - app_existing_certbot_timer.stat.exists

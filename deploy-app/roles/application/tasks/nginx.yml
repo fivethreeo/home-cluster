@@ -1,0 +1,19 @@
+---
+- name: Write application Nginx virtual host
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "/etc/nginx/sites-available/{{ app_name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Apply application nginx configuration
+
+- name: Enable application Nginx virtual host
+  ansible.builtin.file:
+    src: "/etc/nginx/sites-available/{{ app_name }}"
+    dest: "/etc/nginx/sites-enabled/{{ app_name }}"
+    state: link
+  notify: Apply application nginx configuration
+
+- name: Apply database and web configuration changes
+  ansible.builtin.meta: flush_handlers

@@ -1,0 +1,12 @@
+[Unit]
+Description=Domeneshop DDNS for {{ app_name }}
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/domeneshop-ddns {{ app_secrets_dir }}/ddns.json
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true

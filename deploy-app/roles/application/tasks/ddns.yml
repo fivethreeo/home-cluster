@@ -1,0 +1,64 @@
+---
+- name: Configure enabled Domeneshop DDNS
+  when: ddns_enabled | bool
+  block:
+    - name: Write private DDNS credentials and domains
+      ansible.builtin.copy:
+        dest: "{{ app_secrets_dir }}/ddns.json"
+        content: >-
+          {{ {'token': domeneshop_token, 'secret': domeneshop_secret,
+              'domains': ddns_domains, 'ip': ddns_ip} | to_nice_json }}
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Install Domeneshop DDNS updater
+      ansible.builtin.copy:
+        src: domeneshop-ddns.py
+        dest: /usr/local/sbin/domeneshop-ddns
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install application DDNS service
+      ansible.builtin.template:
+        src: ddns.service.j2
+        dest: "/etc/systemd/system/domeneshop-ddns-{{ app_name }}.service"
+        mode: "0644"
+      register: app_ddns_service
+
+    - name: Install application DDNS timer
+      ansible.builtin.template:
+        src: ddns.timer.j2
+        dest: "/etc/systemd/system/domeneshop-ddns-{{ app_name }}.timer"
+        mode: "0644"
+      register: app_ddns_timer
+
+    - name: Enable hourly application DDNS updates
+      ansible.builtin.systemd_service:
+        name: "domeneshop-ddns-{{ app_name }}.timer"
+        enabled: true
+        state: started
+        daemon_reload: "{{ app_ddns_service.changed or app_ddns_timer.changed }}"
+
+    - name: Update application DNS now
+      ansible.builtin.systemd_service:
+        name: "domeneshop-ddns-{{ app_name }}.service"
+        state: started
+      changed_when: false
+
+- name: Check for a previously managed DDNS timer
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/domeneshop-ddns-{{ app_name }}.timer"
+  register: app_existing_ddns_timer
+  when: not (ddns_enabled | bool)
+
+- name: Disable previously managed DDNS updates when opted out
+  ansible.builtin.systemd_service:
+    name: "domeneshop-ddns-{{ app_name }}.timer"
+    enabled: false
+    state: stopped
+  when:
+    - not (ddns_enabled | bool)
+    - app_existing_ddns_timer.stat.exists

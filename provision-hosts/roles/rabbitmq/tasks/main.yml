@@ -1,0 +1,34 @@
+---
+- name: Install RabbitMQ repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Download Team RabbitMQ signing key
+  ansible.builtin.get_url:
+    url: https://keys.openpgp.org/vks/v1/by-fingerprint/0A9AF2115F4687BD29803A206B73A36E6026DFCA
+    dest: /usr/share/keyrings/com.rabbitmq.team.asc
+    mode: "0644"
+
+- name: Configure Team RabbitMQ repositories
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/rabbitmq.list
+    mode: "0644"
+    content: |
+      deb [arch=amd64 signed-by=/usr/share/keyrings/com.rabbitmq.team.asc] https://deb1.rabbitmq.com/rabbitmq-server/debian/{{ ansible_facts['distribution_release'] }} {{ ansible_facts['distribution_release'] }} main
+      deb [arch=amd64 signed-by=/usr/share/keyrings/com.rabbitmq.team.asc] https://deb2.rabbitmq.com/rabbitmq-server/debian/{{ ansible_facts['distribution_release'] }} {{ ansible_facts['distribution_release'] }} main
+
+- name: Install RabbitMQ server
+  ansible.builtin.apt:
+    name: "{{ rabbitmq_package }}"
+    state: latest
+    update_cache: true
+
+- name: Enable and start RabbitMQ server
+  ansible.builtin.service:
+    name: rabbitmq-server
+    enabled: true
+    state: started

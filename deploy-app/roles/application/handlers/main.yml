@@ -1,0 +1,37 @@
+---
+- name: Restart application PostgreSQL
+  ansible.builtin.service:
+    name: postgresql
+    state: restarted
+  delegate_to: "{{ app_postgresql_host }}"
+
+- name: Reload application PostgreSQL
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: postgres
+    query: SELECT pg_reload_conf()
+  delegate_to: "{{ app_postgresql_host }}"
+  changed_when: true
+
+- name: Validate application nginx
+  ansible.builtin.command: /usr/sbin/nginx -t
+  changed_when: false
+  listen: Apply application nginx configuration
+
+- name: Reload application nginx
+  ansible.builtin.service:
+    name: nginx
+    state: reloaded
+  listen: Apply application nginx configuration
+
+- name: Restart application Celery worker
+  ansible.builtin.systemd_service:
+    name: "celery-{{ app_name }}.service"
+    state: restarted
+  when: celery_enabled | bool
+
+- name: Restart application Celery Beat
+  ansible.builtin.systemd_service:
+    name: "celerybeat-{{ app_name }}.service"
+    state: restarted
+  when: celery_beat_enabled | bool

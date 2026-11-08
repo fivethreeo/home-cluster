@@ -1,0 +1,13 @@
+[Unit]
+Description=Renew Domeneshop certificates for {{ app_name }}
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/domeneshop-certbot/.venv/bin/certbot renew --non-interactive --config-dir {{ app_certbot_config_dir }} --work-dir {{ app_certbot_work_dir }} --logs-dir {{ app_certbot_logs_dir }} --deploy-hook "/usr/sbin/nginx -t && /usr/bin/systemctl reload nginx"
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+ReadWritePaths={{ app_certbot_config_dir }} {{ app_certbot_work_dir }} {{ app_certbot_logs_dir }}
