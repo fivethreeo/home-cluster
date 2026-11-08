@@ -29,9 +29,24 @@
     name: "celery-{{ app_name }}.service"
     state: restarted
   when: celery_enabled | bool
+  delegate_to: "{{ app_django_host if app_deploy_code | bool else inventory_hostname }}"
 
 - name: Restart application Celery Beat
   ansible.builtin.systemd_service:
     name: "celerybeat-{{ app_name }}.service"
     state: restarted
   when: celery_beat_enabled | bool
+  delegate_to: "{{ app_django_host if app_deploy_code | bool else inventory_hostname }}"
+
+- name: Validate Django origin nginx
+  ansible.builtin.command: /usr/sbin/nginx -t
+  changed_when: false
+  delegate_to: "{{ app_django_host }}"
+  listen: Apply Django origin nginx configuration
+
+- name: Reload Django origin nginx
+  ansible.builtin.service:
+    name: nginx
+    state: reloaded
+  delegate_to: "{{ app_django_host }}"
+  listen: Apply Django origin nginx configuration

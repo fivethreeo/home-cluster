@@ -216,6 +216,82 @@ sudo journalctl -u gunicorn-prosango -u celery-prosango -u celerybeat-prosango -
 Celery/Beat are ready to run jobs, but application tasks and schedules still need
 to be defined in Prosango.
 
+## Optional Memcached
+
+To add the cache to an existing server without rerunning RabbitMQ or the other
+infrastructure roles:
+
+```sh
+ansible-playbook -i provision-hosts/inventory.yml provision-hosts/provision.yml \
+  --limit sugar --tags memcached -e memcached_enabled=true
+```
+
+For future provisioning runs, optionally keep `memcached_enabled: true` on
+`sugar` in `provision-hosts/inventory.yml`. The service listens only on localhost,
+with UDP disabled and a default 64 MB item-cache budget.
+
+Add this setting to `~/.config/home-cluster/prosango.yml`:
+
+```yaml
+app_memcached_enabled: true
+```
+
+Then repeat the code-deployment command from step 7. It installs the Python
+client, configures Django's cache, and checks real cache writes and reads.
+No additional secrets are required.
+
+Production and staging can share the same cache service: each uses its
+`app_name` as a cache-key prefix. Prefixes avoid collisions, not unauthorized
+access. This enables Django's cache API, not automatic page caching.
+
+The app setting defaults to false. Disable it and redeploy to return to
+local-memory caching; the shared Memcached service is retained.
+
+## Optional TypeScript HTTP and WebSocket services
+
+Prosango has separate `typescript-backend/` and `typescript-ws-backend/`
+directories beside `typescript-frontend/` and `django-project/`.
+Build the new services locally:
+
+```sh
+cd ../prosango-project
+python3 run.py npm-backend ci
+python3 run.py npm-backend run build
+python3 run.py npm-ws-backend ci
+python3 run.py npm-ws-backend run build
+cd ../ansible-home-cluster
+```
+
+Add the desired component switches and locations to the app YAML:
+
+```yaml
+app_django_enabled: true
+app_ts_backend_enabled: true
+app_ts_ws_backend_enabled: true
+app_django_location: /
+app_ts_backend_location: /api/
+app_ts_ws_backend_location: /ws/
+app_ts_backend_port: 8001
+app_ts_ws_backend_port: 8002
+```
+
+Repeat the deployment command from step 7. Test the HTTP backend at
+`http://192.168.1.100/api/healthz` and connect a WebSocket client to
+`ws://192.168.1.100/ws/`. With public TLS, use HTTPS and WSS instead.
+These are health/JSON and echo starters; add authentication and application
+features before handling private data.
+
+Django remains enabled by default; the new components default to disabled.
+Turning a component off stops/disables its service and removes its Nginx route.
+A Node-only stack does not require Django code, frontend builds, or database
+secrets; Celery requires Django. No TypeScript compilation occurs on servers.
+
+For separate servers, set `app_django_host`, `app_ts_backend_host`, and
+`app_ts_ws_backend_host` to inventory aliases, with explicit private bind
+addresses. Limit deployment to the Nginx gateway, not the backend hosts.
+See `deploy-app/README.md` for a complete split-server inventory and app YAML,
+private Django static/media origin, firewall requirements, and host-move steps.
+
 ## Future releases
 
 Build the frontend locally again, then repeat the deployment command from step 7.

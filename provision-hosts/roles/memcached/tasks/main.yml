@@ -1,0 +1,39 @@
+---
+- name: Validate Memcached configuration
+  ansible.builtin.assert:
+    that:
+      - memcached_memory_mb | int > 0
+      - memcached_port | int > 0
+      - memcached_port | int < 65536
+    fail_msg: Set positive Memcached memory and a valid TCP port.
+
+- name: Install Memcached
+  ansible.builtin.apt:
+    name: memcached
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Configure localhost-only Memcached with UDP disabled
+  ansible.builtin.template:
+    src: memcached.conf.j2
+    dest: /etc/memcached.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Memcached
+
+- name: Enable and start Memcached
+  ansible.builtin.systemd_service:
+    name: memcached
+    enabled: true
+    state: started
+
+- name: Apply Memcached configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the Memcached TCP socket
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ memcached_port | int }}"
+    timeout: 30

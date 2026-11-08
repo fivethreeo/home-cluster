@@ -6,12 +6,15 @@ import subprocess
 import tarfile
 
 
-def build_bundle(source, frontend, output):
+def build_bundle(source, frontend, output, components=('django',)):
     source = Path(source).resolve()
     frontend = Path(frontend).resolve()
-    if not (source / 'django-project/manage.py').is_file():
+    if not components or set(components) - {'django', 'typescript-backend', 'typescript-ws-backend'}:
+        raise ValueError('Select Django, TypeScript HTTP and/or TypeScript WebSocket components')
+    django = 'django' in components
+    if django and not (source / 'django-project/manage.py').is_file():
         raise ValueError('Source must be a Prosango checkout containing django-project/manage.py')
-    for manifest in [frontend / 'manifest.json', frontend / 'editor/editor-manifest.json']:
+    for manifest in ([frontend / 'manifest.json', frontend / 'editor/editor-manifest.json'] if django else []):
         if not manifest.is_file():
             raise ValueError(f'Missing prebuilt frontend manifest: {manifest}')
         with manifest.open() as file:
@@ -28,9 +31,9 @@ def build_bundle(source, frontend, output):
          '--exclude-standard', '-z', '--', 'django-project'],
         check=True,
         stdout=subprocess.PIPE,
-    )
+    ) if django else None
     members = {}
-    for name in set(tracked.stdout.decode().split('\0')) - {''}:
+    for name in (set(tracked.stdout.decode().split('\0')) - {''} if tracked else []):
         path = source / name
         relative = Path(name).relative_to('django-project')
         if (
@@ -44,12 +47,25 @@ def build_bundle(source, frontend, output):
             raise ValueError(f'Source symlinks are not supported: {name}')
         if path.is_file():
             members[name] = path
-    for path in frontend.rglob('*'):
+    for path in (frontend.rglob('*') if django else []):
         if path.is_symlink():
             raise ValueError(f'Frontend symlinks are not supported: {path}')
         if path.is_file():
             name = Path('typescript-frontend/dist') / path.relative_to(frontend)
             members[name.as_posix()] = path
+
+    for component in set(components) - {'django'}:
+        root = source / component
+        if root.is_symlink() or (root / 'dist').is_symlink():
+            raise ValueError(f'Backend directory symlinks are not supported: {root}')
+        for required in ['package.json', 'package-lock.json', 'dist/index.js']:
+            if not (root / required).is_file():
+                raise ValueError(f'Build {component} locally before deployment: missing {required}')
+        for path in [root / 'package.json', root / 'package-lock.json', *root.joinpath('dist').rglob('*')]:
+            if path.is_symlink():
+                raise ValueError(f'Backend symlinks are not supported: {path}')
+            if path.is_file():
+                members[path.relative_to(source).as_posix()] = path
 
     def metadata(info):
         info.uid = info.gid = 0
@@ -69,5 +85,7 @@ if __name__ == '__main__':
     parser.add_argument('source')
     parser.add_argument('frontend')
     parser.add_argument('output')
+    parser.add_argument('--components', nargs='+', default=['django'],
+                        choices=['django', 'typescript-backend', 'typescript-ws-backend'])
     args = parser.parse_args()
-    build_bundle(args.source, args.frontend, args.output)
+    build_bundle(args.source, args.frontend, args.output, args.components)

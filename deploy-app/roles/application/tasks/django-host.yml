@@ -1,0 +1,51 @@
+---
+- name: Install private Django origin Nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create Django runtime group
+  ansible.builtin.group:
+    name: "{{ app_user }}"
+
+- name: Create Django runtime user
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    group: "{{ app_user }}"
+    home: "{{ app_home }}"
+    shell: /usr/sbin/nologin
+    password_lock: true
+    create_home: true
+
+- name: Prepare Django runtime directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: www-data
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ app_home }}"
+      mode: "0750"
+    - path: "{{ app_home }}/static"
+      mode: "2750"
+    - path: "{{ app_home }}/media"
+      mode: "2750"
+
+- name: Permit the Django origin to read application uploads
+  ansible.builtin.user:
+    name: www-data
+    groups: "{{ app_user }}"
+    append: true
+  notify: Apply Django origin nginx configuration
+
+- name: Create private Django Celery configuration directory
+  ansible.builtin.file:
+    path: "{{ app_secrets_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: celery_enabled | bool or celery_beat_enabled | bool

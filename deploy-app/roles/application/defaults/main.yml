@@ -5,13 +5,48 @@ app_home: "/srv/{{ app_name }}"
 app_domains: []
 app_upstream: http://127.0.0.1:8000
 app_media_enabled: false
+app_memcached_enabled: false
+app_memcached_location: 127.0.0.1:11211
 app_deploy_code: false
+app_django_enabled: true
+app_django_host: "{{ inventory_hostname }}"
+app_django_location: /
+app_django_origin_bind: 127.0.0.1
+app_django_origin_port: 8080
+app_django_address: "{{ app_django_origin_bind }}"
+app_ts_backend_enabled: false
+app_ts_backend_host: "{{ inventory_hostname }}"
+app_ts_backend_location: /api/
+app_ts_backend_bind_host: 127.0.0.1
+app_ts_backend_address: "{{ app_ts_backend_bind_host }}"
+app_ts_backend_port: 8001
+app_ts_backend_upstream: >-
+  http://{{ app_ts_backend_address }}:{{ app_ts_backend_port }}
+app_ts_ws_backend_enabled: false
+app_ts_ws_backend_host: "{{ inventory_hostname }}"
+app_ts_ws_backend_location: /ws/
+app_ts_ws_backend_bind_host: 127.0.0.1
+app_ts_ws_backend_address: "{{ app_ts_ws_backend_bind_host }}"
+app_ts_ws_backend_port: 8002
+app_ts_ws_backend_upstream: >-
+  http://{{ app_ts_ws_backend_address }}:{{ app_ts_ws_backend_port }}
+app_node_components:
+  - name: typescript-backend
+    enabled: "{{ app_ts_backend_enabled | bool }}"
+    host: "{{ app_ts_backend_host }}"
+    bind_host: "{{ app_ts_backend_bind_host }}"
+    port: "{{ app_ts_backend_port }}"
+  - name: typescript-ws-backend
+    enabled: "{{ app_ts_ws_backend_enabled | bool }}"
+    host: "{{ app_ts_ws_backend_host }}"
+    bind_host: "{{ app_ts_ws_backend_bind_host }}"
+    port: "{{ app_ts_ws_backend_port }}"
 app_bind: 127.0.0.1:8000
 app_workers: 2
 django_secret_key: ""
 celery_result_backend: ""
 app_database_host: >-
-  {{ '127.0.0.1' if app_postgresql_host == inventory_hostname
+  {{ '127.0.0.1' if app_postgresql_host == (app_django_host if app_deploy_code | bool else inventory_hostname)
      else hostvars[app_postgresql_host]['ansible_host'] | default(app_postgresql_host) }}
 
 celery_enabled: false
@@ -21,11 +56,11 @@ app_code_dir: "{{ app_home }}/current"
 app_virtualenv: "{{ app_home }}/.venv"
 app_environment_file: "{{ app_home }}/.env"
 celery_broker_host: >-
-  {{ '127.0.0.1' if app_rabbitmq_host == inventory_hostname
+  {{ '127.0.0.1' if app_rabbitmq_host == (app_django_host if app_deploy_code | bool else inventory_hostname)
      else hostvars[app_rabbitmq_host]['ansible_host'] | default(app_rabbitmq_host) }}
 
 # Host values are inventory names, not connection addresses.
-app_postgresql_host: "{{ inventory_hostname }}"
+app_postgresql_host: "{{ app_django_host if app_deploy_code | bool else inventory_hostname }}"
 app_database: "{{ app_name }}"
 app_database_user: "{{ app_name }}"
 app_database_password: ""
@@ -35,7 +70,7 @@ app_postgresql_client_addresses:
 # Leave existing listeners unchanged unless explicitly configured.
 app_postgresql_listen_addresses: ""
 
-app_rabbitmq_host: "{{ inventory_hostname }}"
+app_rabbitmq_host: "{{ app_django_host if app_deploy_code | bool else inventory_hostname }}"
 app_rabbitmq_vhost: "{{ app_name }}"
 app_rabbitmq_user: "{{ app_name }}"
 app_rabbitmq_password: ""

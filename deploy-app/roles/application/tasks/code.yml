@@ -65,6 +65,30 @@
   changed_when: false
   no_log: true
 
+- name: Verify the enabled Django Memcached backend
+  become_user: "{{ app_user }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ app_virtualenv }}/bin/python"
+      - manage.py
+      - shell
+      - -c
+      - >-
+        from uuid import uuid4; from django.core.cache import caches;
+        from django.core.cache.backends.memcached import PyMemcacheCache;
+        cache = caches['default'];
+        assert isinstance(cache, PyMemcacheCache), 'Memcached backend not configured';
+        key = 'ansible-check-' + uuid4().hex;
+        cache.set(key, key, timeout=30);
+        assert cache.get(key) == key, 'Memcached read/write check failed';
+        cache.delete(key)
+    chdir: "{{ app_code_dir }}"
+  environment:
+    DJANGO_ENV_FILE: "{{ app_environment_file }}"
+  when: app_memcached_enabled | bool
+  changed_when: false
+  no_log: true
+
 - name: Apply database migrations
   become_user: "{{ app_user }}"
   ansible.builtin.command:
@@ -132,3 +156,36 @@
   retries: 5
   delay: 2
   until: app_backend_health is succeeded
+
+- name: Configure the separate private Django origin
+  when: app_django_host != inventory_hostname
+  block:
+    - name: Install private Django origin configuration
+      ansible.builtin.template:
+        src: django-origin.conf.j2
+        dest: "/etc/nginx/sites-available/{{ app_name }}-origin"
+        mode: "0644"
+      notify: Apply Django origin nginx configuration
+
+    - name: Enable the private Django origin
+      ansible.builtin.file:
+        src: "/etc/nginx/sites-available/{{ app_name }}-origin"
+        dest: "/etc/nginx/sites-enabled/{{ app_name }}-origin"
+        state: link
+      notify: Apply Django origin nginx configuration
+
+    - name: Enable the Django origin Nginx service
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: started
+        enabled: true
+
+    - name: Apply private Django origin configuration
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify the private Django origin responds
+      ansible.builtin.uri:
+        url: "http://{{ app_django_origin_bind }}:{{ app_django_origin_port }}/"
+        headers:
+          Host: "{{ app_domains | first }}"
+        status_code: 200

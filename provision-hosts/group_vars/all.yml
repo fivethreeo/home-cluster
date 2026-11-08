@@ -3,3 +3,4 @@
 rabbitmq_enabled: false
 postgresql_enabled: false
 nginx_enabled: false
+memcached_enabled: false

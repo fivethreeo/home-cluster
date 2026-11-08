@@ -1,0 +1,23 @@
+server {
+    listen {{ app_django_origin_bind }}:{{ app_django_origin_port | int }};
+    server_name {{ app_domains | join(' ') }};
+
+    location /static/ {
+        alias {{ app_home }}/static/;
+    }
+{% if app_media_enabled | bool %}
+    location ^~ /media/ {
+        alias {{ app_home }}/media/;
+        autoindex off;
+        disable_symlinks on;
+        add_header X-Content-Type-Options nosniff always;
+    }
+{% endif %}
+    location / {
+        proxy_pass http://{{ app_bind }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $http_x_real_ip;
+        proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+    }
+}

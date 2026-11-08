@@ -10,3 +10,7 @@
       when: postgresql_enabled | bool
     - role: nginx
       when: nginx_enabled | bool
+    - role: memcached
+      when: memcached_enabled | bool
+      tags:
+        - memcached

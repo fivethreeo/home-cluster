@@ -13,6 +13,7 @@ import urllib.error
 import urllib.parse
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+import yaml
 
 
 ROLE = Path(__file__).resolve().parents[1] / "roles/application"
@@ -71,19 +72,29 @@ class DynamicDnsTests(unittest.TestCase):
 
 
 class NginxSiteTests(unittest.TestCase):
-    def render(self, tls, media=False):
+    def render(self, tls, media=False, **variables):
         environment = Environment(undefined=StrictUndefined)
         environment.filters["bool"] = bool
         template = environment.from_string((ROLE / "templates/nginx.conf.j2").read_text())
-        return template.render(
-            app_name="example",
-            app_domains=["example.com", "www.example.com"],
-            app_home="/srv/example",
-            app_upstream="http://127.0.0.1:8000",
-            app_certbot_config_dir="/etc/letsencrypt/example",
-            certbot_enabled=tls,
-            app_media_enabled=media,
-        )
+        return template.render({
+            "app_name": "example",
+            "app_domains": ["example.com", "www.example.com"],
+            "app_home": "/srv/example",
+            "app_upstream": "http://127.0.0.1:8000",
+            "app_certbot_config_dir": "/etc/letsencrypt/example",
+            "certbot_enabled": tls,
+            "app_media_enabled": media,
+            "inventory_hostname": "web",
+            "app_django_enabled": True,
+            "app_django_host": "web",
+            "app_django_location": "/",
+            "app_ts_backend_enabled": False,
+            "app_ts_backend_location": "/api/",
+            "app_ts_backend_upstream": "http://127.0.0.1:8001",
+            "app_ts_ws_backend_enabled": False,
+            "app_ts_ws_backend_location": "/ws/",
+            "app_ts_ws_backend_upstream": "http://127.0.0.1:8002",
+        } | variables)
 
     def test_http_site_does_not_reference_missing_certificates(self):
         site = self.render(False)
@@ -113,8 +124,78 @@ class NginxSiteTests(unittest.TestCase):
                 self.assertIn("add_header X-Content-Type-Options nosniff always;", site)
 
 
+    def test_optional_backends_strip_prefixes_and_upgrade_websockets(self):
+        for tls in [False, True]:
+            with self.subTest(tls=tls):
+                site = self.render(tls, app_ts_backend_enabled=True, app_ts_ws_backend_enabled=True)
+                self.assertIn("location ^~ /api/ {", site)
+                self.assertIn("proxy_pass http://127.0.0.1:8001/;", site)
+                self.assertIn("location ^~ /ws/ {", site)
+                self.assertIn("proxy_pass http://127.0.0.1:8002/;", site)
+                self.assertIn("proxy_set_header Upgrade $http_upgrade;", site)
+                self.assertIn('proxy_set_header Connection "upgrade";', site)
+
+    def test_remote_django_proxies_static_and_media_and_strips_mount_prefix(self):
+        site = self.render(
+            False, media=True, app_django_host="django",
+            app_django_location="/django/", app_upstream="http://10.0.0.2:8080",
+        )
+        self.assertNotIn("alias /srv/example", site)
+        self.assertIn("location /django/ {", site)
+        self.assertIn("proxy_pass http://10.0.0.2:8080/;", site)
+        self.assertIn("return 308 /django/;", site)
+        self.assertIn("return 404;", site)
+
+    def test_node_only_site_does_not_expose_django_assets(self):
+        site = self.render(False, media=True, app_django_enabled=False, app_ts_backend_enabled=True)
+        self.assertNotIn("location /static/", site)
+        self.assertNotIn("location ^~ /media/", site)
+        self.assertNotIn("proxy_pass http://127.0.0.1:8000;", site)
+        self.assertIn("proxy_pass http://127.0.0.1:8001/;", site)
+
+
+class ComponentHostTests(unittest.TestCase):
+    def setUp(self):
+        tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
+        topology = next(task for task in tasks if task["name"] == "Validate selected component topology")
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        self.conditions = [
+            environment.compile_expression(condition)
+            for condition in topology["ansible.builtin.assert"]["that"]
+            if "ansible_user" in condition
+        ]
+        self.variables = {
+            "app_user": "example",
+            "ansible_user": "operator",
+            "app_django_enabled": True,
+            "app_django_host": "django",
+            "app_ts_backend_enabled": True,
+            "app_ts_backend_host": "http",
+            "app_ts_ws_backend_enabled": True,
+            "app_ts_ws_backend_host": "websocket",
+            "hostvars": {host: {"ansible_user": "operator"} for host in ["django", "http", "websocket"]},
+        }
+
+    def permitted(self):
+        return all(condition(**self.variables) for condition in self.conditions)
+
+    def test_each_component_preserves_its_ssh_login_account(self):
+        self.assertTrue(self.permitted())
+        for host in ["django", "http", "websocket"]:
+            with self.subTest(host=host):
+                self.variables["hostvars"][host]["ansible_user"] = "example"
+                self.assertFalse(self.permitted())
+                self.variables["hostvars"][host]["ansible_user"] = "operator"
+
+    def test_disabled_component_does_not_restrict_its_hosts_ssh_login(self):
+        self.variables["hostvars"]["http"]["ansible_user"] = "example"
+        self.variables["app_ts_backend_enabled"] = False
+        self.assertTrue(self.permitted())
+
+
 class ProsangoEnvironmentTests(unittest.TestCase):
-    def test_secrets_survive_environment_file_quoting(self):
+    def render(self, **variables):
         environment = Environment(
             loader=FileSystemLoader(ROLE / "templates"), undefined=StrictUndefined
         )
@@ -123,6 +204,10 @@ class ProsangoEnvironmentTests(unittest.TestCase):
         environment.filters["to_json"] = json.dumps
         secret = 'secret ${literal} "quotes" \\ slash \u00e9'
         rendered = environment.get_template("prosango.env.j2").render(
+            app_name=variables.get("app_name", "example"),
+            app_django_location=variables.get("app_django_location", "/"),
+            app_memcached_enabled=variables.get("app_memcached_enabled", False),
+            app_memcached_location="127.0.0.1:11211",
             django_secret_key=secret,
             app_domains=["192.0.2.100"],
             app_database="example",
@@ -137,11 +222,27 @@ class ProsangoEnvironmentTests(unittest.TestCase):
             app_rabbitmq_password=secret,
             app_rabbitmq_vhost="example",
         )
-        values = dict(line.split("=", 1) for line in shlex.split(rendered))
+        return dict(line.split("=", 1) for line in shlex.split(rendered))
+
+    def test_secrets_survive_environment_file_quoting(self):
+        secret = 'secret ${literal} "quotes" \\ slash \u00e9'
+        values = self.render()
         self.assertEqual(values["DJANGO_SECRET_KEY"], secret)
         self.assertEqual(values["DJANGO_DATABASE_PASSWORD"], secret)
         self.assertEqual(values["DJANGO_SESSION_COOKIE_SECURE"], "false")
         self.assertEqual(values["DJANGO_CSRF_COOKIE_SECURE"], "false")
+
+    def test_memcached_is_disabled_by_default_and_namespaced_when_enabled(self):
+        self.assertEqual(self.render()["DJANGO_MEMCACHED_LOCATION"], "")
+        for app_name in ["prosango", "prosango_staging"]:
+            with self.subTest(app_name=app_name):
+                values = self.render(app_name=app_name, app_memcached_enabled=True)
+                self.assertEqual(values["DJANGO_MEMCACHED_LOCATION"], "127.0.0.1:11211")
+                self.assertEqual(values["DJANGO_CACHE_KEY_PREFIX"], app_name)
+
+    def test_django_mount_prefix_is_empty_for_root_and_configured_for_subpath(self):
+        self.assertEqual(self.render()["DJANGO_SCRIPT_NAME"], "")
+        self.assertEqual(self.render(app_django_location="/django/")["DJANGO_SCRIPT_NAME"], "/django")
 
 
 class CeleryServiceTests(unittest.TestCase):

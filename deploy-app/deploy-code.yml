@@ -9,10 +9,20 @@
     app_frontend_dist: "{{ app_source_dir }}/typescript-frontend/dist"
     app_repository_dir: "{{ app_home }}/current"
     app_code_dir: "{{ app_repository_dir }}/django-project"
-    app_upstream: "http://{{ app_bind }}"
+    app_upstream: >-
+      {{ 'http://' + app_bind if app_django_host == inventory_hostname
+         else 'http://' + app_django_address + ':' + (app_django_origin_port | string) }}
+    app_selected_components: >-
+      {{ (['django'] if app_django_enabled | default(true) | bool else [])
+         + (['typescript-backend'] if app_ts_backend_enabled | default(false) | bool else [])
+         + (['typescript-ws-backend'] if app_ts_ws_backend_enabled | default(false) | bool else []) }}
     celery_app: prosango
 
   tasks:
+    - name: Require at least one selected application component
+      ansible.builtin.assert:
+        that: app_selected_components | length > 0
+
     - name: Deploy the application using a temporary controller bundle
       block:
         - name: Allocate controller code bundle
@@ -25,12 +35,10 @@
 
         - name: Package Django source and already-built frontend
           ansible.builtin.command:
-            argv:
-              - "{{ ansible_playbook_python }}"
-              - "{{ playbook_dir }}/files/package-prosango.py"
-              - "{{ app_source_dir }}"
-              - "{{ app_frontend_dist }}"
-              - "{{ app_code_bundle.path }}"
+            argv: >-
+              {{ [ansible_playbook_python, playbook_dir + '/files/package-prosango.py',
+                  app_source_dir, app_frontend_dist, app_code_bundle.path, '--components']
+                 + app_selected_components }}
           delegate_to: localhost
           become: false
 

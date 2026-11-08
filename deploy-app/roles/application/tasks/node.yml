@@ -1,0 +1,112 @@
+---
+- name: Inspect the managed TypeScript unit
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ app_node_component.name }}-{{ app_name }}.service"
+  register: app_node_unit
+
+- name: Stop or disable the previous TypeScript service
+  ansible.builtin.systemd_service:
+    name: "{{ app_node_component.name }}-{{ app_name }}.service"
+    state: stopped
+    enabled: "{{ app_node_component.enabled | bool }}"
+  when: app_node_unit.stat.exists
+
+- name: Install the selected TypeScript component
+  when: app_node_component.enabled | bool
+  block:
+    - name: Install Node runtime without building application assets
+      ansible.builtin.apt:
+        name:
+          - nodejs
+          - npm
+          - acl
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Check the Node runtime version
+      ansible.builtin.command: /usr/bin/node --version
+      register: app_node_version
+      changed_when: false
+
+    - name: Require Node 20 or newer
+      ansible.builtin.assert:
+        that: app_node_version.stdout.lstrip('v').split('.')[0] | int >= 20
+
+    - name: Create TypeScript runtime group
+      ansible.builtin.group:
+        name: "{{ app_user }}"
+
+    - name: Create TypeScript runtime user
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        group: "{{ app_user }}"
+        home: "{{ app_home }}"
+        shell: /usr/sbin/nologin
+        password_lock: true
+        create_home: true
+
+    - name: Create TypeScript release directory
+      ansible.builtin.file:
+        path: "{{ app_home }}/components/{{ app_node_component.name }}/releases/{{ app_bundle_metadata.stat.checksum }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0750"
+
+    - name: Upload prebuilt TypeScript releases
+      ansible.builtin.unarchive:
+        src: "{{ app_code_bundle.path }}"
+        dest: "{{ app_home }}/components/{{ app_node_component.name }}/releases/{{ app_bundle_metadata.stat.checksum }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "u=rwX,g=rX,o="
+
+    - name: Select the TypeScript release
+      ansible.builtin.file:
+        src: "{{ app_home }}/components/{{ app_node_component.name }}/releases/{{ app_bundle_metadata.stat.checksum }}"
+        dest: "{{ app_home }}/components/{{ app_node_component.name }}/current"
+        state: link
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+
+    - name: Install production Node dependencies without lifecycle scripts
+      become_user: "{{ app_user }}"
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/npm
+          - ci
+          - --omit=dev
+          - --ignore-scripts
+        chdir: "{{ app_home }}/components/{{ app_node_component.name }}/current/{{ app_node_component.name }}"
+
+    - name: Write private TypeScript runtime environment
+      ansible.builtin.template:
+        src: node.env.j2
+        dest: "{{ app_home }}/{{ app_node_component.name }}.env"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0600"
+
+    - name: Install the TypeScript systemd service
+      ansible.builtin.template:
+        src: node.service.j2
+        dest: "/etc/systemd/system/{{ app_node_component.name }}-{{ app_name }}.service"
+        mode: "0644"
+      register: app_node_service
+
+    - name: Enable and start the TypeScript service
+      ansible.builtin.systemd_service:
+        name: "{{ app_node_component.name }}-{{ app_name }}.service"
+        enabled: true
+        state: started
+        daemon_reload: "{{ app_node_service.changed }}"
+
+    - name: Verify the TypeScript health endpoint
+      ansible.builtin.uri:
+        url: "http://{{ app_node_component.bind_host }}:{{ app_node_component.port }}/healthz"
+        status_code: 200
+      register: app_node_health
+      retries: 10
+      delay: 2
+      until: app_node_health is succeeded

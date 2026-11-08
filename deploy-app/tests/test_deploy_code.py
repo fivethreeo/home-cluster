@@ -78,6 +78,43 @@ class CodeBundleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             packager.build_bundle(self.source, self.frontend, self.output)
 
+    def test_node_only_bundle_requires_only_selected_prebuilt_backend(self):
+        for name in ['package.json', 'package-lock.json']:
+            self.write(f'typescript-backend/{name}', '{}')
+        self.write('typescript-backend/dist/index.js', '// compiled backend')
+        self.write('typescript-backend/src/index.ts', '// do not build on target')
+        self.write('typescript-backend/.env', 'test-only-secret')
+        packager.build_bundle(
+            self.source, self.root / 'missing-frontend', self.output, ['typescript-backend'],
+        )
+        with tarfile.open(self.output) as archive:
+            self.assertEqual(set(archive.getnames()), {
+                'typescript-backend/package.json', 'typescript-backend/package-lock.json',
+                'typescript-backend/dist/index.js',
+            })
+        with self.assertRaises(ValueError):
+            packager.build_bundle(self.source, self.frontend, self.output, ['typescript-ws-backend'])
+
+    def test_backend_artifact_symlinks_are_rejected(self):
+        self.write('typescript-backend/package.json', '{}')
+        self.write('typescript-backend/package-lock.json', '{}')
+        path = self.write('typescript-backend/dist/index.js', '// compiled backend')
+        self.write('outside.js', 'test-only-private-file')
+        path.unlink()
+        path.symlink_to(self.source / 'outside.js')
+        with self.assertRaises(ValueError):
+            packager.build_bundle(self.source, self.frontend, self.output, ['typescript-backend'])
+
+    def test_backend_dist_directory_cannot_escape_the_checkout(self):
+        self.write('typescript-backend/package.json', '{}')
+        self.write('typescript-backend/package-lock.json', '{}')
+        outside = self.root / 'external-dist'
+        outside.mkdir()
+        (outside / 'index.js').write_text('test-only-external-file')
+        (self.source / 'typescript-backend/dist').symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            packager.build_bundle(self.source, self.frontend, self.output, ['typescript-backend'])
+
 
 if __name__ == '__main__':
     unittest.main()

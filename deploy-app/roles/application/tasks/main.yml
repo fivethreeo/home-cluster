@@ -6,25 +6,32 @@
       - app_user is match('^[a-z][a-z0-9_]{0,30}$')
       - app_user not in ['root', 'nobody', 'postgres', 'rabbitmq', 'www-data']
       - app_user != (ansible_user | default('root'))
+      - app_domains | length > 0
+      - app_domains | reject('match', '^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$') | list | length == 0
+      - app_upstream is match('^https?://[a-zA-Z0-9_.:-]+$')
+    fail_msg: >-
+      Set valid application names, domains and upstream URLs.
+
+- name: Validate selected database and broker resources
+  ansible.builtin.assert:
+    that:
       - app_database is match('^[a-z][a-z0-9_]{0,62}$')
       - app_database_user is match('^[a-z][a-z0-9_]{0,62}$')
       - app_rabbitmq_vhost | length > 0
       - app_rabbitmq_vhost != '/'
       - app_rabbitmq_user | length > 0
       - app_rabbitmq_user != 'guest'
-      - app_domains | length > 0
-      - app_domains | reject('match', '^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$') | list | length == 0
-      - app_upstream is match('^https?://[a-zA-Z0-9_.:-]+$')
       - app_postgresql_host in hostvars
       - app_rabbitmq_host in hostvars
       - app_postgresql_client_addresses | length > 0
       - >-
-        app_postgresql_host == inventory_hostname or
+        app_postgresql_host == (app_django_host if app_deploy_code | bool else inventory_hostname) or
         app_postgresql_client_addresses != ['127.0.0.1/32', '::1/128']
     fail_msg: >-
-      Set application names, domains and inventory service hosts. For a remote
-      database, explicitly set app_postgresql_client_addresses to the web host's
+      Set database/broker names and inventory hosts. For a remote database,
+      explicitly set app_postgresql_client_addresses to the Django host's
       source address/CIDR.
+  when: not (app_deploy_code | bool) or app_django_enabled | bool
 
 - name: Require application passwords
   ansible.builtin.assert:
@@ -33,6 +40,54 @@
       - app_rabbitmq_password | length > 0
     fail_msg: Supply application passwords through Ansible Vault.
   no_log: true
+  when: not (app_deploy_code | bool) or app_django_enabled | bool
+
+- name: Validate selected component topology
+  ansible.builtin.assert:
+    that:
+      - app_django_host in hostvars
+      - app_ts_backend_host in hostvars
+      - app_ts_ws_backend_host in hostvars
+      - not (app_django_enabled | bool) or app_user != (hostvars[app_django_host].ansible_user | default(ansible_user | default('root')))
+      - not (app_ts_backend_enabled | bool) or app_user != (hostvars[app_ts_backend_host].ansible_user | default(ansible_user | default('root')))
+      - not (app_ts_ws_backend_enabled | bool) or app_user != (hostvars[app_ts_ws_backend_host].ansible_user | default(ansible_user | default('root')))
+      - not (celery_enabled | bool or celery_beat_enabled | bool) or app_django_enabled | bool
+      - app_active_locations | unique | list | length == app_active_locations | length
+      - app_active_locations | reject('match', '^/([a-zA-Z0-9_-]+/)*$') | list | length == 0
+      - not (app_django_enabled | bool) or app_active_locations | select('match', '^/(static|media)/') | list | length == 0
+      - app_active_sockets | unique | list | length == app_active_sockets | length
+      - app_active_ports | map('int') | min > 1023
+      - app_active_ports | map('int') | max < 65536
+      - app_ts_backend_upstream is match('^http://[a-zA-Z0-9_.:-]+$')
+      - app_ts_ws_backend_upstream is match('^http://[a-zA-Z0-9_.:-]+$')
+      - not (app_django_enabled | bool) or app_django_host == inventory_hostname or app_django_origin_bind is match(app_private_ipv4)
+      - not (app_ts_backend_enabled | bool) or app_ts_backend_host == inventory_hostname or app_ts_backend_bind_host is match(app_private_ipv4)
+      - not (app_ts_ws_backend_enabled | bool) or app_ts_ws_backend_host == inventory_hostname or app_ts_ws_backend_bind_host is match(app_private_ipv4)
+    fail_msg: >-
+      Select distinct route prefixes and unprivileged sockets on valid inventory
+      hosts. The application user must not be a component host's SSH login.
+      Remote components require explicit private IPv4 bind addresses.
+      Celery requires Django.
+  vars:
+    app_private_ipv4: '^(10[.]|192[.]168[.]|172[.](1[6-9]|2[0-9]|3[01])[.])[0-9.]+$'
+    app_active_locations: >-
+      {{ ([app_django_location] if app_django_enabled | bool else [])
+         + ([app_ts_backend_location] if app_ts_backend_enabled | bool else [])
+         + ([app_ts_ws_backend_location] if app_ts_ws_backend_enabled | bool else []) }}
+    app_active_sockets: >-
+      {{ ([app_django_host + ':' + app_bind] if app_django_enabled | bool else [])
+         + ([app_django_host + ':' + app_django_origin_bind + ':' + (app_django_origin_port | string)]
+            if app_django_enabled | bool and app_django_host != inventory_hostname else [])
+         + ([app_ts_backend_host + ':' + app_ts_backend_bind_host + ':' + (app_ts_backend_port | string)]
+            if app_ts_backend_enabled | bool else [])
+         + ([app_ts_ws_backend_host + ':' + app_ts_ws_backend_bind_host + ':' + (app_ts_ws_backend_port | string)]
+            if app_ts_ws_backend_enabled | bool else []) }}
+    app_active_ports: >-
+      {{ ([app_bind.split(':')[-1]] if app_django_enabled | bool else [])
+         + ([app_django_origin_port] if app_django_enabled | bool and app_django_host != inventory_hostname else [])
+         + ([app_ts_backend_port] if app_ts_backend_enabled | bool else [])
+         + ([app_ts_ws_backend_port] if app_ts_ws_backend_enabled | bool else []) }}
+  when: app_deploy_code | bool
 
 - name: Validate DNS and certificate configuration
   ansible.builtin.assert:
@@ -111,6 +166,7 @@
       - app_environment_file is match('^/[a-zA-Z0-9_./-]+$')
       - app_bind is match('^127[.]0[.]0[.]1:[0-9]+$')
       - app_workers | int > 0
+      - not (app_memcached_enabled | bool) or app_memcached_location | trim | length > 0
       - django_secret_key | length > 0
       - "'\n' not in django_secret_key"
       - "'\r' not in django_secret_key"
@@ -118,35 +174,87 @@
       - "'\n' not in app_database_password"
       - "'\r' not in app_database_password"
       - "'\t' not in app_database_password"
-    fail_msg: Supply safe deployment paths, a loopback backend address and django_secret_key in Vault.
-  when: app_deploy_code | bool
+    fail_msg: Supply safe deployment paths, a loopback backend address, an enabled cache location and django_secret_key in Vault.
+  when: app_deploy_code | bool and app_django_enabled | bool
   no_log: true
 
 - name: Inspect managed services before code deployment
   ansible.builtin.service_facts:
+  delegate_to: "{{ app_django_host }}"
+  register: app_django_services
   when: app_deploy_code | bool
 
 - name: Stop application processes before updating code or credentials
   ansible.builtin.systemd_service:
     name: "{{ item }}"
     state: stopped
+  delegate_to: "{{ app_django_host }}"
   loop:
     - "gunicorn-{{ app_name }}.service"
     - "celery-{{ app_name }}.service"
     - "celerybeat-{{ app_name }}.service"
   when:
     - app_deploy_code | bool
-    - item in ansible_facts.services
-    - ansible_facts.services[item].state == 'running'
+    - item in app_django_services.ansible_facts.services
+    - app_django_services.ansible_facts.services[item].state == 'running'
+
+- name: Prepare the separate Django runtime host
+  ansible.builtin.include_tasks:
+    file: django-host.yml
+    apply:
+      delegate_to: "{{ app_django_host }}"
+  when:
+    - app_deploy_code | bool
+    - app_django_enabled | bool
+    - app_django_host != inventory_hostname
 
 - name: Configure application database
   ansible.builtin.include_tasks: postgresql.yml
+  when: not (app_deploy_code | bool) or app_django_enabled | bool
 
 - name: Configure application RabbitMQ resources
   ansible.builtin.include_tasks: rabbitmq.yml
+  when: not (app_deploy_code | bool) or app_django_enabled | bool
 
 - name: Install code, runtime environment and static files
-  ansible.builtin.include_tasks: code.yml
+  ansible.builtin.include_tasks:
+    file: code.yml
+    apply:
+      delegate_to: "{{ app_django_host }}"
+  when: app_deploy_code | bool and app_django_enabled | bool
+
+- name: Disable an unselected Django backend
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  delegate_to: "{{ app_django_host }}"
+  loop:
+    - "gunicorn-{{ app_name }}.service"
+    - "celery-{{ app_name }}.service"
+    - "celerybeat-{{ app_name }}.service"
+  when:
+    - app_deploy_code | bool
+    - not (app_django_enabled | bool)
+    - item in app_django_services.ansible_facts.services
+
+- name: Disable the unselected private Django origin
+  ansible.builtin.file:
+    path: "/etc/nginx/sites-enabled/{{ app_name }}-origin"
+    state: absent
+  delegate_to: "{{ app_django_host }}"
+  when: app_deploy_code | bool and not (app_django_enabled | bool)
+  notify: Apply Django origin nginx configuration
+
+- name: Deploy selected TypeScript components
+  ansible.builtin.include_tasks:
+    file: node.yml
+    apply:
+      delegate_to: "{{ app_node_component.host }}"
+  loop: "{{ app_node_components }}"
+  loop_control:
+    loop_var: app_node_component
+    label: "{{ app_node_component.name }}"
   when: app_deploy_code | bool
 
 - name: Create private deployment configuration directory
@@ -167,7 +275,11 @@
   ansible.builtin.include_tasks: certbot.yml
 
 - name: Configure optional application Celery services
-  ansible.builtin.include_tasks: celery.yml
+  ansible.builtin.include_tasks:
+    file: celery.yml
+    apply:
+      delegate_to: "{{ app_django_host if app_deploy_code | bool else inventory_hostname }}"
+  when: not (app_deploy_code | bool) or app_django_enabled | bool
 
 - name: Configure application Nginx site
   ansible.builtin.include_tasks: nginx.yml

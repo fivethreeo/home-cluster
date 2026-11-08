@@ -1,0 +1,21 @@
+[Unit]
+Description={{ app_node_component.name }} for {{ app_name }}
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ app_home }}/components/{{ app_node_component.name }}/current/{{ app_node_component.name }}
+EnvironmentFile={{ app_home }}/{{ app_node_component.name }}.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillMode=mixed
+UMask=0027
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

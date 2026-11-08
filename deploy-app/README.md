@@ -267,3 +267,137 @@ do not automatically transfer data from an existing SQLite database.
 The `current` path must be absent or a symlink. An existing real directory is not
 deleted or replaced automatically. Back up PostgreSQL and uploads before releases
 that change the schema.
+
+## Optional Prosango Memcached cache
+
+Provision Memcached on the web host first with `memcached_enabled: true` in the
+infrastructure inventory. Then add this to the application deployment variables:
+
+```yaml
+app_memcached_enabled: true
+# Default; change only if the cache uses another port/address.
+app_memcached_location: 127.0.0.1:11211
+```
+
+Run `deploy-code.yml` to install the Python client and configure Django's default
+cache as `PyMemcacheCache`. Deployment verifies an actual cache write/read/delete
+before migrations. The service is localhost-only with UDP disabled; no new
+secrets or public ports are required.
+
+Each deployment uses `app_name` as its cache-key prefix, so `prosango` and
+`prosango_staging` can share one Memcached service without key collisions.
+Prefixes are not a security boundary between applications. Cache data is
+temporary and can be evicted or lost on restart; it is not a database.
+
+Application code uses `django.core.cache.cache`; configuring the backend does
+not automatically cache all views or switch sessions to cache storage.
+`app_memcached_enabled` defaults to false. Disabling it and redeploying restores
+Django's local-memory cache without stopping the shared Memcached service.
+
+## Selectable Django, TypeScript HTTP and WebSocket components
+
+`deploy-code.yml` deploys Django by default. Enable the new services independently:
+
+```yaml
+app_django_enabled: true
+app_ts_backend_enabled: true
+app_ts_ws_backend_enabled: true
+app_django_location: /
+app_ts_backend_location: /api/
+app_ts_ws_backend_location: /ws/
+app_bind: 127.0.0.1:8000
+app_ts_backend_port: 8001
+app_ts_ws_backend_port: 8002
+```
+
+Build the selected services locally before deploying:
+
+```sh
+cd ../prosango-project
+python run.py npm-backend ci
+python run.py npm-backend run build
+python run.py npm-ws-backend ci
+python run.py npm-ws-backend run build
+cd ../ansible-home-cluster
+```
+
+Django also requires the prebuilt frontend as before. Node-only deployment
+does not require frontend assets or Django/database secrets. For example, set
+`app_django_enabled: false` and enable either TypeScript component. Celery/Beat
+can only be enabled with Django.
+
+The switches describe the desired stack: disabled components are stopped and
+disabled, and their Nginx routes are removed. Other apps are untouched. Node
+releases live under `/srv/<app>/components/<component>/`; systemd units are named
+`typescript-backend-<app>` and `typescript-ws-backend-<app>`. Application code is
+never compiled on the target; only `npm ci --omit=dev --ignore-scripts` runs there.
+
+Locations must be distinct slash-terminated prefixes. Nginx strips the selected
+HTTP/WebSocket prefix before proxying, so `/api/healthz` reaches `/healthz` and
+clients connect at `ws://<domain>/ws/` (or `wss://` with TLS). Non-root prefixes
+have a slash-adding redirect; use the trailing slash directly for WebSockets.
+Django can also use `/django/`; deployment sets its script prefix so reversed
+admin URLs remain correct. Static/media stay at `/static/` and `/media/`.
+
+### Separate servers behind one Nginx gateway
+
+Run the playbook with `--limit` selecting only the gateway. Component hosts must
+still be listed in the same inventory; tasks delegate to them:
+
+```yaml
+all:
+  hosts:
+    gateway:
+      ansible_host: 192.168.1.100
+      nginx_enabled: true
+    django:
+      ansible_host: 192.168.1.101
+      postgresql_enabled: true
+      rabbitmq_enabled: true
+    http:
+      ansible_host: 192.168.1.102
+    websocket:
+      ansible_host: 192.168.1.103
+```
+
+Example app variables:
+
+```yaml
+app_name: prosango
+app_domains: [example.com]
+app_django_enabled: true
+app_django_host: django
+app_django_origin_bind: 192.168.1.101
+app_django_origin_port: 8080
+app_django_location: /django/
+app_ts_backend_enabled: true
+app_ts_backend_host: http
+app_ts_backend_bind_host: 192.168.1.102
+app_ts_backend_location: /api/
+app_ts_ws_backend_enabled: true
+app_ts_ws_backend_host: websocket
+app_ts_ws_backend_bind_host: 192.168.1.103
+app_ts_ws_backend_location: /ws/
+```
+
+Provision the inventory first, then deploy with `--limit gateway`. Remote
+components require explicit private IPv4 bind addresses; the gateway defaults
+to contacting those same addresses. Override `app_django_address`,
+`app_ts_backend_address`, or `app_ts_ws_backend_address` if it needs different
+contact addresses.
+
+Django keeps Gunicorn on localhost. Deployment installs a private Nginx origin
+on its host to serve Django, collected static files and persistent uploads;
+the gateway proxies those paths to it. By default PostgreSQL/RabbitMQ are also
+on the Django host. Existing separate database/broker settings remain supported.
+Celery runs beside Django. Memcached, if enabled, must be reachable from Django,
+not merely from the gateway.
+
+Public TLS/DDNS stay on the gateway. Internal traffic is HTTP: use a trusted
+private network and firewall origin/backend ports so only the gateway can reach
+them. Prefixes and private addresses are not authentication. Only expose public
+80/443; SSH and other service ports should be restricted appropriately.
+
+Before moving a component to a new inventory host, disable it using its old
+host assignment first. Deployment does not discover or remove services left on
+previous hosts. Keep per-app ports distinct when staging shares a host.
