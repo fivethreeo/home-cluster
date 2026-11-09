@@ -56,15 +56,19 @@
       - not (app_ts_backend_enabled | bool) or app_user != (hostvars[app_ts_backend_host].ansible_user | default(ansible_user | default('root')))
       - not (app_ts_ws_backend_enabled | bool) or app_user != (hostvars[app_ts_ws_backend_host].ansible_user | default(ansible_user | default('root')))
       - not (celery_enabled | bool or celery_beat_enabled | bool) or app_django_enabled | bool
+      - not (app_django_enabled | bool) or app_frontend_enabled | bool
+      - not (app_frontend_html_enabled | bool) or (app_frontend_enabled | bool and not (app_django_enabled | bool))
       - app_active_locations | unique | list | length == app_active_locations | length
       - app_active_locations | reject('match', '^/([a-zA-Z0-9_-]+/)*$') | list | length == 0
+      - not (app_django_enabled | bool or app_frontend_enabled | bool) or app_static_location not in app_active_locations
       - not (app_django_enabled | bool) or app_active_locations | select('match', '^/(static|media)/') | list | length == 0
       - not app_nginx_shared_site or '/' not in app_active_locations
       - not app_nginx_shared_site or not (certbot_enabled | bool or ddns_enabled | bool)
-      - not app_nginx_shared_site or not (app_django_enabled | bool) or (app_static_location != '/static/' and app_media_location != '/media/')
+      - not app_nginx_shared_site or not (app_django_enabled | bool or app_frontend_enabled | bool) or app_static_location != '/static/'
+      - not app_nginx_shared_site or not (app_django_enabled | bool) or app_media_location != '/media/'
       - app_active_sockets | unique | list | length == app_active_sockets | length
-      - app_active_ports | map('int') | min > 1023
-      - app_active_ports | map('int') | max < 65536
+      - app_active_ports | length == 0 or app_active_ports | map('int') | min > 1023
+      - app_active_ports | length == 0 or app_active_ports | map('int') | max < 65536
       - app_ts_backend_upstream is match('^http://[a-zA-Z0-9_.:-]+$')
       - app_ts_ws_backend_upstream is match('^http://[a-zA-Z0-9_.:-]+$')
       - not (app_django_origin_enabled | bool) or app_django_origin_bind is match(app_private_ipv4)
@@ -75,10 +79,12 @@
       hosts. The application user must not be a component host's SSH login.
       Remote components require explicit private IPv4 bind addresses.
       Celery requires Django.
+      Standalone frontend HTML requires frontend assets with Django disabled.
   vars:
     app_private_ipv4: '^(10[.]|192[.]168[.]|172[.](1[6-9]|2[0-9]|3[01])[.])[0-9.]+$'
     app_active_locations: >-
       {{ ([app_django_location] if app_django_enabled | bool else [])
+         + ([app_frontend_html_location] if app_frontend_html_enabled | bool else [])
          + ([app_ts_backend_location] if app_ts_backend_enabled | bool else [])
          + ([app_ts_ws_backend_location] if app_ts_ws_backend_enabled | bool else []) }}
     app_active_sockets: >-
@@ -267,6 +273,10 @@
   delegate_to: "{{ app_django_host }}"
   when: app_deploy_code | bool and not (app_django_origin_enabled | bool)
   notify: Apply Django origin nginx configuration
+
+- name: Install standalone prebuilt frontend assets
+  ansible.builtin.include_tasks: frontend.yml
+  when: app_deploy_code | bool and app_frontend_enabled | bool and not (app_django_enabled | bool)
 
 - name: Deploy selected TypeScript components
   ansible.builtin.include_tasks:

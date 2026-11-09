@@ -1,0 +1,42 @@
+---
+- name: Validate standalone frontend release path
+  ansible.builtin.assert:
+    that: app_repository_dir is match('^/[a-zA-Z0-9_./-]+$')
+    fail_msg: Set an absolute frontend repository path without whitespace.
+
+- name: Create standalone frontend release directory
+  ansible.builtin.file:
+    path: "{{ app_home }}/releases/{{ app_bundle_metadata.stat.checksum }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: www-data
+    mode: "0750"
+
+- name: Upload standalone frontend assets
+  ansible.builtin.unarchive:
+    src: "{{ app_code_bundle.path }}"
+    dest: "{{ app_home }}/releases/{{ app_bundle_metadata.stat.checksum }}"
+    owner: "{{ app_user }}"
+    group: www-data
+    mode: "u=rwX,g=rX,o="
+
+- name: Check standalone HTML entry
+  ansible.builtin.stat:
+    path: "{{ app_home }}/releases/{{ app_bundle_metadata.stat.checksum }}/typescript-frontend/dist/index.html"
+  register: app_frontend_html_entry
+  when: app_frontend_html_enabled | bool
+
+- name: Require built HTML before activating its release
+  ansible.builtin.assert:
+    that: app_frontend_html_entry.stat.isreg | default(false)
+    fail_msg: Build frontend dist/index.html or disable app_frontend_html_enabled.
+  when: app_frontend_html_enabled | bool
+
+- name: Select standalone frontend release
+  ansible.builtin.file:
+    src: "{{ app_home }}/releases/{{ app_bundle_metadata.stat.checksum }}"
+    dest: "{{ app_repository_dir }}"
+    state: link
+    owner: "{{ app_user }}"
+    group: www-data
+  when: app_frontend_activate_release | default(true) | bool

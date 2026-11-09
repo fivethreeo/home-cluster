@@ -1,6 +1,24 @@
-{% if app_django_enabled | bool %}
+{% if app_frontend_html_enabled | bool %}
+{% if app_frontend_html_location != '/' %}
+    location = {{ app_frontend_html_location.rstrip('/') }} {
+        return 308 {{ app_frontend_html_location }};
+    }
+{% endif %}
+    location = {{ app_frontend_html_location }} {
+        root {{ app_frontend_repository_dir }}/typescript-frontend/dist;
+        try_files /index.html =404;
+        default_type text/html;
+        etag off;
+        if_modified_since off;
+        add_header Cache-Control "no-store";
+    }
+
+{% endif %}
+{% if app_django_enabled | bool or app_frontend_enabled | bool %}
     location {{ app_static_location }} {
-{% if app_django_host == inventory_hostname %}
+{% if not (app_django_enabled | bool) %}
+        alias {{ app_frontend_repository_dir }}/typescript-frontend/dist/;
+{% elif app_django_host == inventory_hostname %}
         alias {{ app_home }}/static/;
 {% else %}
         proxy_pass {{ app_upstream }};
@@ -8,6 +26,8 @@
 {% endif %}
     }
 
+{% endif %}
+{% if app_django_enabled | bool %}
 {% if app_media_enabled | bool %}
     location ^~ {{ app_media_location }} {
 {% if app_django_host == inventory_hostname %}
@@ -22,7 +42,7 @@
     }
 
 {% endif %}
-{% if app_django_location != '/' %}
+{% if app_django_location != '/' and not (app_frontend_html_enabled | bool and app_frontend_html_location == app_django_location) %}
     location = {{ app_django_location.rstrip('/') }} {
         return 308 {{ app_django_location }};
     }

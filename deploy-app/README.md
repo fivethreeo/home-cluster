@@ -324,7 +324,7 @@ not automatically cache all views or switch sessions to cache storage.
 `app_memcached_enabled` defaults to false. Disabling it and redeploying restores
 Django's local-memory cache without stopping the shared Memcached service.
 
-## Selectable Django, TypeScript HTTP and WebSocket components
+## Selectable Django, frontend, TypeScript HTTP and WebSocket components
 
 `deploy-code.yml` deploys Django by default. Enable the new services independently:
 
@@ -355,6 +355,76 @@ Django also requires the prebuilt frontend as before. Node-only deployment
 does not require frontend assets or Django/database secrets. For example, set
 `app_django_enabled: false` and enable either TypeScript component. Celery/Beat
 can only be enabled with Django.
+
+To serve the prebuilt frontend and its HTML without Django:
+
+```yaml
+app_django_enabled: false
+app_frontend_enabled: true
+app_frontend_html_location: /template/
+celery_enabled: false
+celery_beat_enabled: false
+app_static_location: /template/static/
+```
+
+Enable either TypeScript component as needed; frontend-assets-only deployment
+also works without backend services. `app_frontend_enabled` defaults to the
+Django switch, preserving existing deployments. Django requires frontend assets.
+
+`app_frontend_html_enabled` defaults to true when frontend is enabled and Django
+is disabled. Nginx serves `dist/index.html` at `app_frontend_html_location`, which
+defaults to `app_django_location`. A missing built HTML file fails deployment
+before the new frontend release is selected. Shared-site deployments must use a
+non-root page location, such as `/template/`. The page uses an exact location,
+not an SPA fallback, and does not interfere with nested static/API/WS routes.
+
+Build `typescript-frontend/dist` locally first. Without Django, the playbook
+uploads it into the application's immutable release and Nginx serves its files
+directly under `app_static_location`, retaining the dist-relative directory
+layout. It does not install Python dependencies, migrate or configure a database
+or broker, or run `collectstatic`. No Django page or backend URL data attributes
+are created.
+
+Template uses `typescript-frontend/src/index.html` as its editable HTML template.
+Its build inserts the CSS/JavaScript tags automatically. Build with an asset
+prefix matching `app_static_location`; for the example above:
+
+```sh
+cd ../template-project
+RSBUILD_ASSET_PREFIX=/template/static/ python3 run.py npm run build
+```
+
+For assets only with HTML hosted elsewhere, set
+`app_frontend_html_enabled: false`. This disables the page location but still
+uploads dist files, including any built HTML, under the asset prefix.
+
+On an existing application, disabling Django still stops its Django/Celery
+services and removes those routes; it does not leave Django running unchanged.
+
+### Update only frontend while keeping backends running
+
+Use the existing application's configuration with `app_frontend_only_update:
+true` instead of disabling Django or Node services:
+
+```sh
+ansible-playbook -i provision-hosts/inventory.yml deploy-app/deploy-code.yml \
+  --limit sugar -e @/home/oyvind/.config/home-cluster/template.yml \
+  -e app_frontend_only_update=true
+```
+
+This selects only the frontend bundle and skips backend provisioning,
+environment changes, migrations, dependency installs and service stops/restarts.
+It does not require database/broker secrets. Frontend releases live separately
+under `/srv/<app>/components/frontend/`, leaving Django and Node release links
+unchanged. Assets merge into the existing collected static directory without
+clearing admin assets, older hashed files or Django's manifest.
+
+HTML serving defaults to enabled for this update mode too. The exact page
+location can share Django's page prefix, such as `/template/`, while nested admin,
+media, API and WebSocket routes keep their existing configuration. Set
+`app_frontend_html_enabled: false` to update assets while retaining Django's page.
+Only this application's Nginx configuration is updated and Nginx is reloaded.
+A later full-stack deployment uses its normal HTML and service switches again.
 
 The switches describe the desired stack: disabled components are stopped and
 disabled, and their Nginx routes are removed. Other apps are untouched. Node
@@ -427,7 +497,12 @@ ws_internal_notify_token: ""
 Generate them with `update-secret.py <app_name> django_internal_auth_token`
 and `update-secret.py <app_name> ws_internal_notify_token`, then redeploy.
 Deployment passes the shared auth key to Django and both Node processes, and
-the notification key only to the WS process. Runtime environment files are
+the notification key to Django/Celery and both Node processes when WS is enabled.
+`WS_INTERNAL_URL` points each sender directly at the WS host/port, using its local
+bind address on the same host and its advertised private address otherwise.
+Template's `template.tasks.notify` uses these settings for authenticated Celery
+notifications. Disabling WS clears its sender URL and token.
+Runtime environment files are
 mode 0600 and their template contents are hidden from Ansible logs. Prosango
 versions without these features simply ignore the extra environment variables.
 Omitted/empty keys leave those features disabled and produce deployment/startup

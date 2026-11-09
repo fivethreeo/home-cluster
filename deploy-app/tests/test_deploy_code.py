@@ -114,6 +114,31 @@ class CodeBundleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             packager.build_bundle(self.source, self.frontend, self.output, ['typescript-ws-backend'])
 
+    def test_frontend_only_bundle_contains_assets_without_django_or_node_dependencies(self):
+        self.write('typescript-frontend/dist/index.html', '<div id="root"></div>')
+        packager.build_bundle(self.source, self.frontend, self.output, ['frontend'])
+        with tarfile.open(self.output) as archive:
+            names = archive.getnames()
+        self.assertIn('typescript-frontend/dist/index.html', names)
+        self.assertIn('typescript-frontend/dist/static/js/app.js', names)
+        self.assertTrue(all(name.startswith('typescript-frontend/dist/') for name in names))
+        (self.frontend / 'manifest.json').unlink()
+        with self.assertRaises(ValueError):
+            packager.build_bundle(self.source, self.frontend, self.output, ['frontend'])
+
+    def test_frontend_and_node_can_be_bundled_without_django(self):
+        self.write('typescript-backend/package.json', '{}')
+        self.write('typescript-backend/package-lock.json', '{}')
+        self.write('typescript-backend/dist/index.js', '// compiled backend')
+        packager.build_bundle(
+            self.source, self.frontend, self.output, ['frontend', 'typescript-backend'],
+        )
+        with tarfile.open(self.output) as archive:
+            names = archive.getnames()
+        self.assertIn('typescript-frontend/dist/static/js/app.js', names)
+        self.assertIn('typescript-backend/dist/index.js', names)
+        self.assertFalse(any(name.startswith('django-project/') for name in names))
+
     def test_backend_artifact_symlinks_are_rejected(self):
         self.write('typescript-backend/package.json', '{}')
         self.write('typescript-backend/package-lock.json', '{}')

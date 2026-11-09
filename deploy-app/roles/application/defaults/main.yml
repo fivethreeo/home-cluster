@@ -14,6 +14,11 @@ app_memcached_enabled: false
 app_memcached_location: 127.0.0.1:11211
 app_deploy_code: false
 app_django_enabled: true
+app_frontend_only_update: false
+app_frontend_enabled: "{{ app_django_enabled | bool or app_frontend_only_update | bool }}"
+app_frontend_html_enabled: "{{ app_frontend_enabled | bool and (app_frontend_only_update | bool or not (app_django_enabled | bool)) }}"
+app_frontend_html_location: "{{ app_django_location }}"
+app_frontend_repository_dir: "{{ app_repository_dir }}"
 app_django_module: prosango
 app_django_host: "{{ inventory_hostname }}"
 app_django_location: /

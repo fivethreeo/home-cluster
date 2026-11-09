@@ -1,0 +1,80 @@
+---
+- name: Validate an isolated frontend update
+  ansible.builtin.assert:
+    that:
+      - app_frontend_enabled | bool
+      - app_name is match('^[a-z][a-z0-9_]{0,30}$')
+      - app_user is match('^[a-z][a-z0-9_]{0,30}$')
+      - app_user not in ['root', 'nobody', 'postgres', 'rabbitmq', 'www-data']
+      - app_home is match('^/[a-zA-Z0-9_./-]+$')
+      - app_static_location is match('^/([a-zA-Z0-9_-]+/)+$')
+      - app_frontend_html_location is match('^/([a-zA-Z0-9_-]+/)*$')
+      - not (app_frontend_html_enabled | bool) or app_frontend_html_location not in [app_static_location, app_media_location, app_ts_backend_location, app_ts_ws_backend_location]
+      - not app_nginx_shared_site or app_nginx_shared_site is match('^[a-z][a-z0-9_]{0,30}$')
+      - not app_nginx_shared_site or app_nginx_shared_site != app_name
+      - not app_nginx_shared_site or not (app_frontend_html_enabled | bool) or app_frontend_html_location != '/'
+    fail_msg: Enable frontend assets and select a valid, isolated page location for the existing application.
+
+- name: Inspect existing frontend asset destination
+  ansible.builtin.stat:
+    path: "{{ app_home }}/static"
+  register: app_frontend_static_root
+
+- name: Require an already provisioned application
+  ansible.builtin.assert:
+    that: app_frontend_static_root.stat.isdir | default(false)
+    fail_msg: Frontend-only updates require an existing application and its static directory.
+
+- name: Select isolated frontend component paths
+  ansible.builtin.set_fact:
+    app_frontend_component_home: "{{ app_home }}/components/frontend"
+    app_frontend_repository_dir: "{{ app_home }}/components/frontend/current"
+
+- name: Create isolated frontend releases directory
+  ansible.builtin.file:
+    path: "{{ app_frontend_component_home }}/releases"
+    state: directory
+    owner: "{{ app_user }}"
+    group: www-data
+    mode: "0750"
+
+- name: Stage frontend assets without switching the active release
+  ansible.builtin.include_tasks: frontend.yml
+  vars:
+    app_home: "{{ app_frontend_component_home }}"
+    app_repository_dir: "{{ app_frontend_repository_dir }}"
+    app_frontend_activate_release: false
+
+- name: Find frontend assets without replacing Django's manifest or HTML
+  ansible.builtin.find:
+    paths: "{{ app_frontend_component_home }}/releases/{{ app_bundle_metadata.stat.checksum }}/typescript-frontend/dist"
+    file_type: any
+    recurse: false
+    excludes:
+      - manifest.json
+      - "*.html"
+  register: app_frontend_public_files
+
+- name: Merge frontend assets while preserving admin assets and previous hashes
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ app_home }}/static/"
+    remote_src: true
+    owner: "{{ app_user }}"
+    group: www-data
+    mode: "u=rwX,g=rX,o="
+  loop: "{{ app_frontend_public_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: app_django_enabled | bool
+
+- name: Activate only the frontend component release
+  ansible.builtin.file:
+    src: "{{ app_frontend_component_home }}/releases/{{ app_bundle_metadata.stat.checksum }}"
+    dest: "{{ app_frontend_repository_dir }}"
+    state: link
+    owner: "{{ app_user }}"
+    group: www-data
+
+- name: Update application Nginx routes without touching backend services
+  ansible.builtin.include_tasks: nginx.yml

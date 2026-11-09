@@ -77,7 +77,7 @@ class NginxSiteTests(unittest.TestCase):
         environment = Environment(loader=FileSystemLoader(ROLE / "templates"), undefined=StrictUndefined)
         environment.filters["bool"] = bool
         template = environment.get_template(filename)
-        return template.render({
+        context = {
             "app_name": "example",
             "app_domains": ["example.com", "www.example.com"],
             "app_home": "/srv/example",
@@ -89,6 +89,9 @@ class NginxSiteTests(unittest.TestCase):
             "app_media_enabled": media,
             "inventory_hostname": "web",
             "app_django_enabled": True,
+            "app_frontend_enabled": False,
+            "app_frontend_only_update": False,
+            "app_repository_dir": "/srv/example/current",
             "app_django_host": "web",
             "app_django_location": "/",
             "app_ts_backend_enabled": False,
@@ -97,7 +100,13 @@ class NginxSiteTests(unittest.TestCase):
             "app_ts_ws_backend_enabled": False,
             "app_ts_ws_backend_location": "/ws/",
             "app_ts_ws_backend_upstream": "http://127.0.0.1:8002",
-        } | variables)
+        } | variables
+        defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+        for name in ["app_frontend_html_enabled", "app_frontend_html_location", "app_frontend_repository_dir"]:
+            context.setdefault(
+                name, environment.compile_expression(defaults[name].strip()[2:-2])(**context),
+            )
+        return template.render(context)
 
     def test_http_site_does_not_reference_missing_certificates(self):
         site = self.render(False)
@@ -155,6 +164,75 @@ class NginxSiteTests(unittest.TestCase):
         self.assertNotIn("location ^~ /media/", site)
         self.assertNotIn("proxy_pass http://127.0.0.1:8000;", site)
         self.assertIn("proxy_pass http://127.0.0.1:8001/;", site)
+
+    def test_frontend_assets_are_served_without_django_or_a_page_route(self):
+        site = self.render(
+            False, media=True, app_django_enabled=False, app_frontend_enabled=True,
+            app_frontend_html_enabled=False,
+            app_static_location="/template/static/", app_ts_backend_enabled=True,
+            app_ts_backend_location="/template/api/",
+        )
+        self.assertIn("location /template/static/", site)
+        self.assertIn("alias /srv/example/current/typescript-frontend/dist/;", site)
+        self.assertNotIn("alias /srv/example/static/", site)
+        self.assertNotIn("location ^~ /media/", site)
+        self.assertNotIn("proxy_pass http://127.0.0.1:8000", site)
+        self.assertIn("return 404;", site)
+        self.assertIn("location ^~ /template/api/", site)
+        self.assertNotIn("try_files /index.html", site)
+
+    def test_frontend_only_defaults_to_html_at_the_configured_mount(self):
+        site = self.render(
+            False, filename="nginx-locations.conf.j2",
+            app_django_enabled=False, app_frontend_enabled=True,
+            app_django_location="/template/", app_static_location="/template/static/",
+            app_ts_backend_enabled=True, app_ts_backend_location="/template/api/",
+        )
+        self.assertIn("location = /template {", site)
+        self.assertIn("return 308 /template/;", site)
+        self.assertIn("location = /template/ {", site)
+        self.assertIn("root /srv/example/current/typescript-frontend/dist;", site)
+        self.assertIn("try_files /index.html =404;", site)
+        self.assertIn("default_type text/html;", site)
+        self.assertIn('add_header Cache-Control "no-store";', site)
+        self.assertIn("if_modified_since off;", site)
+        self.assertIn("location /template/static/", site)
+        self.assertIn("location ^~ /template/api/", site)
+        self.assertNotIn("proxy_pass http://127.0.0.1:8000", site)
+        self.assertNotIn("location /template/ {", site)
+        self.assertNotIn("try_files $uri", site)
+        self.assertNotIn("location / {", site)
+
+    def test_standalone_html_can_be_served_at_root_without_a_redirect_loop(self):
+        site = self.render(False, app_django_enabled=False, app_frontend_enabled=True)
+        self.assertIn("location = / {", site)
+        self.assertIn("try_files /index.html =404;", site)
+        self.assertNotIn("return 308", site)
+
+    def test_django_keeps_its_own_html_when_frontend_is_enabled(self):
+        site = self.render(False, app_frontend_enabled=True)
+        self.assertNotIn("try_files /index.html", site)
+        self.assertIn("proxy_pass http://127.0.0.1:8000;", site)
+
+    def test_frontend_update_retains_django_node_and_admin_asset_routes(self):
+        site = self.render(
+            False, media=True, filename="nginx-locations.conf.j2",
+            app_frontend_enabled=True, app_frontend_only_update=True,
+            app_frontend_repository_dir="/srv/example/components/frontend/current",
+            app_django_location="/template/", app_static_location="/template/static/",
+            app_media_location="/template/media/", app_ts_backend_enabled=True,
+            app_ts_backend_location="/template/api/", app_ts_ws_backend_enabled=True,
+            app_ts_ws_backend_location="/template/ws/",
+        )
+        self.assertIn("location = /template/ {", site)
+        self.assertIn("root /srv/example/components/frontend/current/typescript-frontend/dist;", site)
+        self.assertEqual(site.count("location = /template {"), 1)
+        self.assertIn("location /template/ {", site)
+        self.assertIn("proxy_pass http://127.0.0.1:8000/;", site)
+        self.assertIn("alias /srv/example/static/;", site)
+        self.assertIn("alias /srv/example/media/;", site)
+        self.assertIn("location ^~ /template/api/", site)
+        self.assertIn("location ^~ /template/ws/", site)
 
     def test_internal_endpoints_are_not_exposed_through_public_gateway_prefixes(self):
         for django_location, ws_location in [("/", "/ws/"), ("/django/", "/socket/")]:
@@ -238,6 +316,7 @@ class ProsangoEnvironmentTests(unittest.TestCase):
             app_name=variables.get("app_name", "example"),
             app_django_location=variables.get("app_django_location", "/"),
             app_django_address=variables.get("app_django_address", "127.0.0.1"),
+            app_django_host=variables.get("app_django_host", "django"),
             django_internal_auth_token=variables.get("django_internal_auth_token", ""),
             app_session_cookie_name=variables.get("app_session_cookie_name", "sessionid"),
             app_csrf_cookie_name=variables.get("app_csrf_cookie_name", "csrftoken"),
@@ -248,6 +327,11 @@ class ProsangoEnvironmentTests(unittest.TestCase):
             app_ts_backend_location=variables.get("app_ts_backend_location", "/api/"),
             app_ts_ws_backend_enabled=variables.get("app_ts_ws_backend_enabled", False),
             app_ts_ws_backend_location=variables.get("app_ts_ws_backend_location", "/ws/"),
+            app_ts_ws_backend_host=variables.get("app_ts_ws_backend_host", "django"),
+            app_ts_ws_backend_bind_host=variables.get("app_ts_ws_backend_bind_host", "127.0.0.1"),
+            app_ts_ws_backend_address=variables.get("app_ts_ws_backend_address", "192.168.1.103"),
+            app_ts_ws_backend_port=variables.get("app_ts_ws_backend_port", 8002),
+            ws_internal_notify_token=variables.get("ws_internal_notify_token", ""),
             app_memcached_enabled=variables.get("app_memcached_enabled", False),
             app_memcached_location="127.0.0.1:11211",
             django_secret_key=secret,
@@ -308,6 +392,21 @@ class ProsangoEnvironmentTests(unittest.TestCase):
             ["192.0.2.100", "127.0.0.1", "localhost", "192.168.1.101"],
         )
 
+    def test_django_notification_sender_uses_private_local_or_remote_ws_destination(self):
+        for ws_host, expected in [
+            ("django", "http://127.0.0.1:8002/"), ("ws", "http://192.168.1.103:8002/"),
+        ]:
+            with self.subTest(ws_host=ws_host):
+                values = self.render(
+                    app_ts_ws_backend_enabled=True, app_ts_ws_backend_host=ws_host,
+                    ws_internal_notify_token='test-only-notify "quoted"',
+                )
+                self.assertEqual(values["WS_INTERNAL_URL"], expected)
+                self.assertEqual(values["WS_INTERNAL_NOTIFY_TOKEN"], 'test-only-notify "quoted"')
+        disabled = self.render(ws_internal_notify_token="configured-but-disabled")
+        self.assertEqual(disabled["WS_INTERNAL_URL"], "")
+        self.assertEqual(disabled["WS_INTERNAL_NOTIFY_TOKEN"], "")
+
     def test_prefixed_runtime_urls_and_cookies_match_shared_nginx_routes(self):
         values = self.render(
             app_django_location="/template/", app_static_location="/template/static/",
@@ -325,6 +424,71 @@ class ProsangoEnvironmentTests(unittest.TestCase):
 
 
 class ApplicationRuntimeTests(unittest.TestCase):
+    def test_frontend_update_selects_no_backend_sources(self):
+        play = yaml.safe_load((ROLE.parents[1] / "deploy-code.yml").read_text())[0]
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        select = environment.compile_expression(play["vars"]["app_selected_components"].strip()[2:-2])
+        context = {
+            "app_django_enabled": True, "app_frontend_enabled": True,
+            "app_ts_backend_enabled": True, "app_ts_ws_backend_enabled": True,
+        }
+        self.assertEqual(select(app_frontend_only_update=True, **context), ["frontend"])
+        self.assertEqual(select(app_frontend_only_update=False, **context), [
+            "django", "frontend", "typescript-backend", "typescript-ws-backend",
+        ])
+
+    def test_standalone_html_requires_frontend_without_django(self):
+        tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
+        topology = next(task for task in tasks if task["name"] == "Validate selected component topology")
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        condition = next(
+            condition for condition in topology["ansible.builtin.assert"]["that"]
+            if "app_frontend_html_enabled" in condition
+        )
+        permitted = environment.compile_expression(condition)
+        for frontend, django, expected in [(True, False, True), (False, False, False), (True, True, False)]:
+            with self.subTest(frontend=frontend, django=django):
+                self.assertEqual(permitted(
+                    app_frontend_html_enabled=True, app_frontend_enabled=frontend,
+                    app_django_enabled=django,
+                ), expected)
+
+    def test_html_page_participates_in_route_collision_and_shared_site_checks(self):
+        tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
+        topology = next(task for task in tasks if task["name"] == "Validate selected component topology")
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        locations = environment.compile_expression(topology["vars"]["app_active_locations"].strip()[2:-2])
+        distinct = environment.compile_expression(next(
+            condition for condition in topology["ansible.builtin.assert"]["that"]
+            if "app_active_locations | unique" in condition
+        ))
+        shared = environment.compile_expression(next(
+            condition for condition in topology["ansible.builtin.assert"]["that"]
+            if "'/' not in app_active_locations" in condition
+        ))
+        context = {
+            "app_django_enabled": False, "app_frontend_html_enabled": True,
+            "app_frontend_html_location": "/template/",
+            "app_ts_backend_enabled": True, "app_ts_backend_location": "/template/api/",
+            "app_ts_ws_backend_enabled": False,
+        }
+        self.assertTrue(distinct(app_active_locations=locations(**context)))
+        context["app_frontend_html_location"] = "/template/api/"
+        self.assertFalse(distinct(app_active_locations=locations(**context)))
+        context["app_frontend_html_location"] = "/"
+        self.assertFalse(shared(app_nginx_shared_site="prosango", app_active_locations=locations(**context)))
+
+    def test_assets_only_topology_does_not_require_backend_ports(self):
+        tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
+        topology = next(task for task in tasks if task["name"] == "Validate selected component topology")
+        environment = Environment(undefined=StrictUndefined)
+        for condition in topology["ansible.builtin.assert"]["that"]:
+            if "app_active_ports" in condition:
+                self.assertTrue(environment.compile_expression(condition)(app_active_ports=[]))
+
     def render_node(self, **variables):
         environment = Environment(undefined=StrictUndefined)
         environment.filters["bool"] = bool
@@ -344,6 +508,11 @@ class ApplicationRuntimeTests(unittest.TestCase):
             "app_django_origin_port": 8080,
             "django_internal_auth_token": 'test-only-auth "quoted"',
             "ws_internal_notify_token": 'test-only-notify "quoted"',
+            "app_ts_ws_backend_enabled": True,
+            "app_ts_ws_backend_host": "django",
+            "app_ts_ws_backend_bind_host": "127.0.0.1",
+            "app_ts_ws_backend_address": "192.168.1.103",
+            "app_ts_ws_backend_port": 8002,
             "app_ws_allowed_origins": ["https://example.com", "https://www.example.com"],
         } | variables)
         return dict(line.split("=", 1) for line in shlex.split(rendered))
@@ -360,7 +529,11 @@ class ApplicationRuntimeTests(unittest.TestCase):
             "bind_host": "192.168.1.102", "port": 8001,
         })
         self.assertEqual(remote["DJANGO_INTERNAL_URL"], "http://192.168.1.101:8080/")
-        self.assertNotIn("WS_INTERNAL_NOTIFY_TOKEN", remote)
+        self.assertEqual(remote["WS_INTERNAL_NOTIFY_TOKEN"], 'test-only-notify "quoted"')
+        self.assertEqual(remote["WS_INTERNAL_URL"], "http://192.168.1.103:8002/")
+        disabled = self.render_node(app_ts_ws_backend_enabled=False)
+        self.assertEqual(disabled["WS_INTERNAL_URL"], "")
+        self.assertEqual(disabled["WS_INTERNAL_NOTIFY_TOKEN"], "")
 
     def test_missing_keys_keep_anonymous_configuration_and_node_only_has_no_django_destination(self):
         values = self.render_node(django_internal_auth_token="", ws_internal_notify_token="")

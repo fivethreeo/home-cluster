@@ -14,7 +14,9 @@
       {{ 'http://' + app_bind if app_django_host == inventory_hostname
          else 'http://' + app_django_address + ':' + (app_django_origin_port | string) }}
     app_selected_components: >-
-      {{ (['django'] if app_django_enabled | default(true) | bool else [])
+      {{ ['frontend'] if app_frontend_only_update | default(false) | bool else
+         (['django'] if app_django_enabled | default(true) | bool else [])
+         + (['frontend'] if app_frontend_enabled | default(app_django_enabled | default(true)) | bool else [])
          + (['typescript-backend'] if app_ts_backend_enabled | default(false) | bool else [])
          + (['typescript-ws-backend'] if app_ts_ws_backend_enabled | default(false) | bool else []) }}
     celery_app: "{{ app_django_module }}"
@@ -34,13 +36,13 @@
       delegate_to: localhost
       become: false
       register: app_django_entry_point
-      when: app_django_enabled | default(true) | bool
+      when: app_django_enabled | default(true) | bool and not (app_frontend_only_update | default(false) | bool)
 
     - name: Require the Django module to match the source checkout
       ansible.builtin.assert:
         that: app_django_entry_point.stat.isreg | default(false)
         fail_msg: Set app_django_module and app_source_dir to the same application's module and checkout.
-      when: app_django_enabled | default(true) | bool
+      when: app_django_enabled | default(true) | bool and not (app_frontend_only_update | default(false) | bool)
 
     - name: Deploy the application using a temporary controller bundle
       block:
@@ -52,7 +54,7 @@
           become: false
           register: app_code_bundle
 
-        - name: Package Django source and already-built frontend
+        - name: Package selected source and already-built assets
           ansible.builtin.command:
             argv: >-
               {{ [ansible_playbook_python, playbook_dir + '/files/package-prosango.py',
@@ -72,6 +74,7 @@
         - name: Configure resources and deploy the release
           ansible.builtin.include_role:
             name: application
+            tasks_from: "{{ 'frontend-update' if app_frontend_only_update | default(false) | bool else 'main' }}"
 
       always:
         - name: Remove temporary controller bundle
