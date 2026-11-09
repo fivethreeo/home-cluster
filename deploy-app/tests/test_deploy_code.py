@@ -114,6 +114,15 @@ class CodeBundleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             packager.build_bundle(self.source, self.frontend, self.output, ['typescript-ws-backend'])
 
+    def test_django_can_be_bundled_without_frontend_and_ignores_unselected_assets(self):
+        for frontend in (self.root / 'missing-frontend', self.frontend):
+            with self.subTest(frontend=frontend):
+                packager.build_bundle(self.source, frontend, self.output, ['django'])
+                with tarfile.open(self.output) as archive:
+                    names = archive.getnames()
+                self.assertIn('django-project/manage.py', names)
+                self.assertTrue(all(name.startswith('django-project/') for name in names))
+
     def test_frontend_only_bundle_contains_assets_without_django_or_node_dependencies(self):
         self.write('typescript-frontend/dist/index.html', '<div id="root"></div>')
         packager.build_bundle(self.source, self.frontend, self.output, ['frontend'])

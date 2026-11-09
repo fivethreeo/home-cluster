@@ -6,13 +6,13 @@ import subprocess
 import tarfile
 
 
-def build_bundle(source, frontend, output, components=('django',)):
+def build_bundle(source, frontend, output, components=('django', 'frontend')):
     source = Path(source).resolve()
     frontend = Path(frontend).resolve()
     if not components or set(components) - {'django', 'frontend', 'typescript-backend', 'typescript-ws-backend'}:
         raise ValueError('Select Django, frontend, TypeScript HTTP and/or TypeScript WebSocket components')
     django = 'django' in components
-    include_frontend = django or 'frontend' in components
+    include_frontend = 'frontend' in components
     if django and not (source / 'django-project/manage.py').is_file():
         raise ValueError('Source must be an application checkout containing django-project/manage.py')
     manifests = [frontend / 'manifest.json'] if include_frontend else []
@@ -90,7 +90,7 @@ if __name__ == '__main__':
     parser.add_argument('source')
     parser.add_argument('frontend')
     parser.add_argument('output')
-    parser.add_argument('--components', nargs='+', default=['django'],
+    parser.add_argument('--components', nargs='+', default=['django', 'frontend'],
                         choices=['django', 'frontend', 'typescript-backend', 'typescript-ws-backend'])
     args = parser.parse_args()
     build_bundle(args.source, args.frontend, args.output, args.components)

@@ -317,6 +317,7 @@ class ProsangoEnvironmentTests(unittest.TestCase):
             app_django_location=variables.get("app_django_location", "/"),
             app_django_address=variables.get("app_django_address", "127.0.0.1"),
             app_django_host=variables.get("app_django_host", "django"),
+            app_frontend_enabled=variables.get("app_frontend_enabled", True),
             django_internal_auth_token=variables.get("django_internal_auth_token", ""),
             app_session_cookie_name=variables.get("app_session_cookie_name", "sessionid"),
             app_csrf_cookie_name=variables.get("app_csrf_cookie_name", "csrftoken"),
@@ -365,6 +366,12 @@ class ProsangoEnvironmentTests(unittest.TestCase):
                 values = self.render(app_name=app_name, app_memcached_enabled=True)
                 self.assertEqual(values["DJANGO_MEMCACHED_LOCATION"], "127.0.0.1:11211")
                 self.assertEqual(values["DJANGO_CACHE_KEY_PREFIX"], app_name)
+
+    def test_django_frontend_switch_reaches_the_runtime_configuration(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                values = self.render(app_frontend_enabled=enabled)
+                self.assertEqual(values["DJANGO_FRONTEND_ENABLED"], str(enabled).lower())
 
     def test_django_mount_prefix_is_empty_for_root_and_configured_for_subpath(self):
         self.assertEqual(self.render()["DJANGO_SCRIPT_NAME"], "")
@@ -437,6 +444,35 @@ class ApplicationRuntimeTests(unittest.TestCase):
         self.assertEqual(select(app_frontend_only_update=False, **context), [
             "django", "frontend", "typescript-backend", "typescript-ws-backend",
         ])
+        self.assertEqual(select(
+            app_django_enabled=True, app_frontend_enabled=False,
+            app_ts_backend_enabled=False, app_ts_ws_backend_enabled=False,
+        ), ["django"])
+
+    def test_code_deployments_pair_django_and_celery_without_requiring_frontend(self):
+        defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+        tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
+        topology = next(task for task in tasks if task["name"] == "Validate selected component topology")
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        worker_default = environment.compile_expression(defaults["celery_enabled"].strip()[2:-2])
+        conditions = [
+            environment.compile_expression(condition)
+            for condition in topology["ansible.builtin.assert"]["that"]
+            if "celery_enabled" in condition
+            or ("app_frontend_enabled" in condition and "app_django_enabled" in condition
+                and "app_frontend_html_enabled" not in condition and "app_static_location" not in condition)
+        ]
+        for django in (False, True):
+            with self.subTest(django=django):
+                self.assertEqual(worker_default(app_deploy_code=True, app_django_enabled=django), django)
+                context = {
+                    "app_deploy_code": True, "app_django_enabled": django,
+                    "app_frontend_enabled": False, "celery_beat_enabled": False,
+                }
+                self.assertTrue(all(condition(celery_enabled=django, **context) for condition in conditions))
+                self.assertFalse(all(condition(celery_enabled=not django, **context) for condition in conditions))
+        self.assertFalse(worker_default(app_deploy_code=False, app_django_enabled=True))
 
     def test_standalone_html_requires_frontend_without_django(self):
         tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())

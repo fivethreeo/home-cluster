@@ -76,7 +76,7 @@ app_database_host: >-
   {{ '127.0.0.1' if app_postgresql_host == (app_django_host if app_deploy_code | bool else inventory_hostname)
      else hostvars[app_postgresql_host]['ansible_host'] | default(app_postgresql_host) }}
 
-celery_enabled: false
+celery_enabled: "{{ app_deploy_code | bool and app_django_enabled | bool }}"
 celery_beat_enabled: false
 celery_app: ""
 app_code_dir: "{{ app_home }}/current"

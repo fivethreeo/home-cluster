@@ -56,7 +56,7 @@
       - not (app_ts_backend_enabled | bool) or app_user != (hostvars[app_ts_backend_host].ansible_user | default(ansible_user | default('root')))
       - not (app_ts_ws_backend_enabled | bool) or app_user != (hostvars[app_ts_ws_backend_host].ansible_user | default(ansible_user | default('root')))
       - not (celery_enabled | bool or celery_beat_enabled | bool) or app_django_enabled | bool
-      - not (app_django_enabled | bool) or app_frontend_enabled | bool
+      - not (app_deploy_code | bool) or (celery_enabled | bool) == (app_django_enabled | bool)
       - not (app_frontend_html_enabled | bool) or (app_frontend_enabled | bool and not (app_django_enabled | bool))
       - app_active_locations | unique | list | length == app_active_locations | length
       - app_active_locations | reject('match', '^/([a-zA-Z0-9_-]+/)*$') | list | length == 0
@@ -79,6 +79,7 @@
       hosts. The application user must not be a component host's SSH login.
       Remote components require explicit private IPv4 bind addresses.
       Celery requires Django.
+      Code deployments enable Django and the Celery worker together.
       Standalone frontend HTML requires frontend assets with Django disabled.
   vars:
     app_private_ipv4: '^(10[.]|192[.]168[.]|172[.](1[6-9]|2[0-9]|3[01])[.])[0-9.]+$'

@@ -208,8 +208,8 @@ defaults to `prosango`; set it to `template` for `../template-project`.
 The default source directory is the sibling `<app_django_module>-project`.
 This also selects Gunicorn's WSGI module and Celery's default app, independently
 of `app_name` (which may be `template_staging`, for example).
-Build the frontend yourself beforehand, using the same checkout/branch as the
-Django code:
+When frontend is enabled (the default with Django), build it yourself beforehand,
+using the same checkout/branch as the Django code:
 
 ```sh
 cd ../prosango-project
@@ -266,7 +266,7 @@ ansible-playbook -i provision-hosts/inventory.yml deploy-app/deploy-code.yml \
 ```
 
 The playbook packages tracked and non-ignored new Django source files plus the
-prebuilt frontend `dist`. It does not build frontend or backend assets on the
+selected prebuilt frontend `dist`. It does not build frontend or backend assets on the
 target; Node is installed only for enabled TypeScript services. Local `.env`
 files, virtualenvs, SQLite databases, uploads, and Python
 caches are excluded. The selected checkout must contain the environment,
@@ -280,7 +280,7 @@ PostgreSQL authentication is applied before `migrate --noinput`; then
 `collectstatic --clear` copies Django and prebuilt frontend files to the persistent
 static root. Gunicorn starts on `127.0.0.1:8000` and is health-checked before the
 remaining Celery/Nginx configuration.
-Prosango requires its editor manifest as well as the main frontend manifest;
+With frontend enabled, Prosango requires its editor manifest as well as the main frontend manifest;
 Template's frontend has no editor and needs only `dist/manifest.json`.
 
 Collected static files are assigned to `www-data`. Nginx also joins the
@@ -351,10 +351,26 @@ python run.py npm-ws-backend run build
 cd ../ansible-home-cluster
 ```
 
-Django also requires the prebuilt frontend as before. Node-only deployment
-does not require frontend assets or Django/database secrets. For example, set
-`app_django_enabled: false` and enable either TypeScript component. Celery/Beat
-can only be enabled with Django.
+Frontend is optional for Django. For a checkout supporting
+`DJANGO_FRONTEND_ENABLED` (such as Template), use:
+
+```yaml
+app_django_enabled: true
+app_frontend_enabled: false
+```
+
+Only Django source is packaged; no frontend directory, build or manifest is
+required. Django still collects its admin and other app static files. The runtime
+receives `DJANGO_FRONTEND_ENABLED=false` so it does not read a stale manifest.
+With frontend enabled, missing or development manifests still fail packaging.
+Component switches are explicit, not inferred from missing source directories.
+
+Code deployments enable the Celery worker with Django by default and reject
+mismatched `celery_enabled`/`app_django_enabled` switches. Beat remains optional
+and requires Django.
+
+Node-only deployment does not require frontend assets or Django/database secrets.
+For example, set `app_django_enabled: false` and enable either TypeScript component.
 
 To serve the prebuilt frontend and its HTML without Django:
 
@@ -369,7 +385,7 @@ app_static_location: /template/static/
 
 Enable either TypeScript component as needed; frontend-assets-only deployment
 also works without backend services. `app_frontend_enabled` defaults to the
-Django switch, preserving existing deployments. Django requires frontend assets.
+Django switch, preserving existing deployments; override it to disable frontend.
 
 `app_frontend_html_enabled` defaults to true when frontend is enabled and Django
 is disabled. Nginx serves `dist/index.html` at `app_frontend_html_location`, which
