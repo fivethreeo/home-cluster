@@ -34,6 +34,7 @@ class CodeBundleTests(unittest.TestCase):
         manifest = json.dumps({'entries': {'index': {'initial': {'js': ['/static/js/app.js']}}}})
         self.write('typescript-frontend/dist/manifest.json', manifest)
         self.write('typescript-frontend/dist/editor/editor-manifest.json', manifest)
+        self.write('typescript-frontend/src/editor.ts', '// Prosango editor entry point\n')
         self.write('typescript-frontend/dist/static/js/app.js', '// prebuilt output\n')
         self.output = self.root / 'bundle.tar.gz'
 
@@ -61,6 +62,24 @@ class CodeBundleTests(unittest.TestCase):
         checksum = hashlib.sha256(self.output.read_bytes()).hexdigest()
         packager.build_bundle(self.source, self.frontend, self.output)
         self.assertEqual(hashlib.sha256(self.output.read_bytes()).hexdigest(), checksum)
+
+    def test_template_bundle_requires_no_editor_and_includes_renamed_django_package(self):
+        (self.source / 'typescript-frontend/src/editor.ts').unlink()
+        (self.frontend / 'editor/editor-manifest.json').unlink()
+        self.write('django-project/template/wsgi.py', '# Template WSGI entry point\n')
+        self.write('django-project/template/models.py', '# Job model\n')
+        packager.build_bundle(self.source, self.frontend, self.output)
+        with tarfile.open(self.output) as archive:
+            names = archive.getnames()
+        self.assertIn('django-project/template/wsgi.py', names)
+        self.assertIn('django-project/template/models.py', names)
+        self.assertIn('typescript-frontend/dist/manifest.json', names)
+        self.assertNotIn('typescript-frontend/dist/editor/editor-manifest.json', names)
+        self.write('typescript-frontend/dist/manifest.json', json.dumps({
+            'entries': {'index': {'initial': {'js': ['http://localhost:3000/app.js']}}},
+        }))
+        with self.assertRaises(ValueError):
+            packager.build_bundle(self.source, self.frontend, self.output)
 
     def test_missing_or_development_assets_fail_before_packaging(self):
         (self.frontend / 'editor/editor-manifest.json').unlink()

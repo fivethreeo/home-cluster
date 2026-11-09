@@ -149,18 +149,41 @@ Both decryption and encryption use the password file without prompting.
 
 ## 6. Build the frontend locally
 
-Use the Prosango feature branch:
+Build the same Prosango checkout you intend to deploy:
 
 ```sh
 cd ../prosango-project
-git switch feat/celery-env-postgresql
 python3 run.py npm ci
 python3 run.py npm run build
 cd ../ansible-home-cluster
 ```
 
-The deployment consumes `typescript-frontend/dist`. **It does not install Node
-or run Rspack on the server.**
+The deployment consumes `typescript-frontend/dist`. **It does not run Rspack
+on the server.** Node is installed only for enabled TypeScript backends.
+
+To deploy `../template-project` instead, use `app_name: template` and
+`app_django_module: template` in a separate `template.yml` configuration and
+use `template-secrets.yml` for its Vault. The default source checkout then
+becomes `../template-project`, and Gunicorn/Celery use the `template` module.
+Build the frontend from that directory instead. Prosango's editor assets are
+required only when deploying Prosango.
+
+Enable `app_ts_backend_enabled: true` and/or `app_ts_ws_backend_enabled: true`
+to deploy the Node services. Build each enabled backend locally as well:
+
+```sh
+python3 run.py npm-backend ci
+python3 run.py npm-backend run build
+python3 run.py npm-ws-backend ci
+python3 run.py npm-ws-backend run build
+```
+
+Run these commands from the selected application checkout. For Template's
+optional internal features, add `django_internal_auth_token` and
+`ws_internal_notify_token` to its Vault and generate them with
+`deploy-app/update-secret.py`. Leaving them unset disables those features with
+warnings; anonymous access still works. See `deploy-app/README.md` for private
+routing, WebSocket Origins and same-host multi-app port/domain requirements.
 
 ## 7. Deploy the application
 

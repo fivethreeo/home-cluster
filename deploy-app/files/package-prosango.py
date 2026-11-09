@@ -13,8 +13,12 @@ def build_bundle(source, frontend, output, components=('django',)):
         raise ValueError('Select Django, TypeScript HTTP and/or TypeScript WebSocket components')
     django = 'django' in components
     if django and not (source / 'django-project/manage.py').is_file():
-        raise ValueError('Source must be a Prosango checkout containing django-project/manage.py')
-    for manifest in ([frontend / 'manifest.json', frontend / 'editor/editor-manifest.json'] if django else []):
+        raise ValueError('Source must be an application checkout containing django-project/manage.py')
+    manifests = [frontend / 'manifest.json'] if django else []
+    editor_manifest = frontend / 'editor/editor-manifest.json'
+    if django and ((source / 'typescript-frontend/src/editor.ts').is_file() or editor_manifest.exists()):
+        manifests.append(editor_manifest)
+    for manifest in manifests:
         if not manifest.is_file():
             raise ValueError(f'Missing prebuilt frontend manifest: {manifest}')
         with manifest.open() as file:
@@ -81,7 +85,7 @@ def build_bundle(source, frontend, output, components=('django',)):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Bundle Django source and prebuilt Prosango assets.')
+    parser = argparse.ArgumentParser(description='Bundle Django source and prebuilt application assets.')
     parser.add_argument('source')
     parser.add_argument('frontend')
     parser.add_argument('output')

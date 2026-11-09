@@ -1,11 +1,12 @@
 ---
-- name: Deploy Prosango code and prebuilt frontend
+- name: Deploy application code and prebuilt frontend
   hosts: all
   become: true
   gather_facts: true
   vars:
     app_deploy_code: true
-    app_source_dir: "{{ playbook_dir }}/../../prosango-project"
+    app_django_module: prosango
+    app_source_dir: "{{ playbook_dir }}/../../{{ app_django_module }}-project"
     app_frontend_dist: "{{ app_source_dir }}/typescript-frontend/dist"
     app_repository_dir: "{{ app_home }}/current"
     app_code_dir: "{{ app_repository_dir }}/django-project"
@@ -16,12 +17,30 @@
       {{ (['django'] if app_django_enabled | default(true) | bool else [])
          + (['typescript-backend'] if app_ts_backend_enabled | default(false) | bool else [])
          + (['typescript-ws-backend'] if app_ts_ws_backend_enabled | default(false) | bool else []) }}
-    celery_app: prosango
+    celery_app: "{{ app_django_module }}"
 
   tasks:
+    - name: Validate the selected Django module
+      ansible.builtin.assert:
+        that: app_django_module is match('^[a-zA-Z_][a-zA-Z0-9_]*$')
+
     - name: Require at least one selected application component
       ansible.builtin.assert:
         that: app_selected_components | length > 0
+
+    - name: Check the selected Django entry point before changing services
+      ansible.builtin.stat:
+        path: "{{ app_source_dir }}/django-project/{{ app_django_module }}/wsgi.py"
+      delegate_to: localhost
+      become: false
+      register: app_django_entry_point
+      when: app_django_enabled | default(true) | bool
+
+    - name: Require the Django module to match the source checkout
+      ansible.builtin.assert:
+        that: app_django_entry_point.stat.isreg | default(false)
+        fail_msg: Set app_django_module and app_source_dir to the same application's module and checkout.
+      when: app_django_enabled | default(true) | bool
 
     - name: Deploy the application using a temporary controller bundle
       block:

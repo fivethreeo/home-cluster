@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import shlex
 import sys
 import tempfile
@@ -72,14 +73,16 @@ class DynamicDnsTests(unittest.TestCase):
 
 
 class NginxSiteTests(unittest.TestCase):
-    def render(self, tls, media=False, **variables):
-        environment = Environment(undefined=StrictUndefined)
+    def render(self, tls, media=False, filename="nginx.conf.j2", **variables):
+        environment = Environment(loader=FileSystemLoader(ROLE / "templates"), undefined=StrictUndefined)
         environment.filters["bool"] = bool
-        template = environment.from_string((ROLE / "templates/nginx.conf.j2").read_text())
+        template = environment.get_template(filename)
         return template.render({
             "app_name": "example",
             "app_domains": ["example.com", "www.example.com"],
             "app_home": "/srv/example",
+            "app_static_location": "/static/",
+            "app_media_location": "/media/",
             "app_upstream": "http://127.0.0.1:8000",
             "app_certbot_config_dir": "/etc/letsencrypt/example",
             "certbot_enabled": tls,
@@ -153,6 +156,34 @@ class NginxSiteTests(unittest.TestCase):
         self.assertNotIn("proxy_pass http://127.0.0.1:8000;", site)
         self.assertIn("proxy_pass http://127.0.0.1:8001/;", site)
 
+    def test_internal_endpoints_are_not_exposed_through_public_gateway_prefixes(self):
+        for django_location, ws_location in [("/", "/ws/"), ("/django/", "/socket/")]:
+            with self.subTest(django_location=django_location):
+                site = self.render(
+                    False, app_django_location=django_location,
+                    app_ts_ws_backend_enabled=True, app_ts_ws_backend_location=ws_location,
+                )
+                for prefix in [django_location, ws_location]:
+                    self.assertIn(f"location ^~ {prefix}internal/ {{\n        return 404;", site)
+
+    def test_shared_site_snippet_contains_only_namespaced_routes(self):
+        site = self.render(
+            False, media=True, filename="nginx-locations.conf.j2",
+            app_django_location="/template/", app_static_location="/template/static/",
+            app_media_location="/template/media/", app_ts_backend_enabled=True,
+            app_ts_backend_location="/template/api/", app_ts_ws_backend_enabled=True,
+            app_ts_ws_backend_location="/template/ws/",
+        )
+        self.assertNotIn("server {", site)
+        self.assertNotIn("location / {", site)
+        self.assertNotIn("location /static/", site)
+        self.assertIn("location /template/static/", site)
+        self.assertIn("location ^~ /template/media/", site)
+        self.assertIn("location = /template {", site)
+        self.assertIn("proxy_pass http://127.0.0.1:8000/;", site)
+        self.assertIn("location ^~ /template/api/", site)
+        self.assertIn("location ^~ /template/ws/", site)
+
 
 class ComponentHostTests(unittest.TestCase):
     def setUp(self):
@@ -206,6 +237,13 @@ class ProsangoEnvironmentTests(unittest.TestCase):
         rendered = environment.get_template("prosango.env.j2").render(
             app_name=variables.get("app_name", "example"),
             app_django_location=variables.get("app_django_location", "/"),
+            app_django_address=variables.get("app_django_address", "127.0.0.1"),
+            django_internal_auth_token=variables.get("django_internal_auth_token", ""),
+            app_session_cookie_name=variables.get("app_session_cookie_name", "sessionid"),
+            app_csrf_cookie_name=variables.get("app_csrf_cookie_name", "csrftoken"),
+            app_cookie_path=variables.get("app_cookie_path", "/"),
+            app_static_location=variables.get("app_static_location", "/static/"),
+            app_media_location=variables.get("app_media_location", "/media/"),
             app_ts_backend_enabled=variables.get("app_ts_backend_enabled", False),
             app_ts_backend_location=variables.get("app_ts_backend_location", "/api/"),
             app_ts_ws_backend_enabled=variables.get("app_ts_ws_backend_enabled", False),
@@ -257,6 +295,133 @@ class ProsangoEnvironmentTests(unittest.TestCase):
                 )
                 self.assertEqual(values["DJANGO_TS_BACKEND_URL"], "/v1/" if http_enabled else "")
                 self.assertEqual(values["DJANGO_TS_WS_BACKEND_URL"], "/socket/" if ws_enabled else "")
+
+    def test_internal_auth_key_is_optional_and_private_destination_is_an_allowed_host(self):
+        self.assertEqual(self.render()["DJANGO_INTERNAL_AUTH_TOKEN"], "")
+        values = self.render(
+            django_internal_auth_token='test-only-key "quoted"',
+            app_django_address="192.168.1.101",
+        )
+        self.assertEqual(values["DJANGO_INTERNAL_AUTH_TOKEN"], 'test-only-key "quoted"')
+        self.assertEqual(
+            values["DJANGO_ALLOWED_HOSTS"].split(","),
+            ["192.0.2.100", "127.0.0.1", "localhost", "192.168.1.101"],
+        )
+
+    def test_prefixed_runtime_urls_and_cookies_match_shared_nginx_routes(self):
+        values = self.render(
+            app_django_location="/template/", app_static_location="/template/static/",
+            app_media_location="/template/media/", app_cookie_path="/template/",
+            app_session_cookie_name="template_sessionid", app_csrf_cookie_name="template_csrftoken",
+        )
+        self.assertEqual(values["DJANGO_SCRIPT_NAME"], "/template")
+        self.assertEqual(values["DJANGO_STATIC_URL"], "/template/static/")
+        self.assertEqual(values["DJANGO_MEDIA_URL"], "/template/media/")
+        self.assertEqual(values["RSBUILD_BASE_URL"], "/template/static")
+        self.assertEqual(values["DJANGO_SESSION_COOKIE_NAME"], "template_sessionid")
+        self.assertEqual(values["DJANGO_CSRF_COOKIE_NAME"], "template_csrftoken")
+        self.assertEqual(values["DJANGO_SESSION_COOKIE_PATH"], "/template/")
+        self.assertEqual(values["DJANGO_CSRF_COOKIE_PATH"], "/template/")
+
+
+class ApplicationRuntimeTests(unittest.TestCase):
+    def render_node(self, **variables):
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        environment.filters["to_json"] = json.dumps
+        template = environment.from_string((ROLE / "templates/node.env.j2").read_text())
+        rendered = template.render({
+            "app_name": "template_staging",
+            "app_session_cookie_name": "template_sessionid",
+            "app_node_component": {
+                "name": "typescript-ws-backend", "host": "django",
+                "bind_host": "127.0.0.1", "port": 8002,
+            },
+            "app_django_enabled": True,
+            "app_django_host": "django",
+            "app_bind": "127.0.0.1:8000",
+            "app_django_address": "192.168.1.101",
+            "app_django_origin_port": 8080,
+            "django_internal_auth_token": 'test-only-auth "quoted"',
+            "ws_internal_notify_token": 'test-only-notify "quoted"',
+            "app_ws_allowed_origins": ["https://example.com", "https://www.example.com"],
+        } | variables)
+        return dict(line.split("=", 1) for line in shlex.split(rendered))
+
+    def test_node_auth_uses_direct_local_or_remote_origin_without_public_mount_prefix(self):
+        local = self.render_node()
+        self.assertEqual(local["DJANGO_INTERNAL_URL"], "http://127.0.0.1:8000/")
+        self.assertEqual(local["DJANGO_INTERNAL_AUTH_TOKEN"], 'test-only-auth "quoted"')
+        self.assertEqual(local["DJANGO_SESSION_COOKIE_NAME"], "template_sessionid")
+        self.assertEqual(local["WS_INTERNAL_NOTIFY_TOKEN"], 'test-only-notify "quoted"')
+        self.assertEqual(local["WS_ALLOWED_ORIGINS"], "https://example.com,https://www.example.com")
+        remote = self.render_node(app_node_component={
+            "name": "typescript-backend", "host": "http",
+            "bind_host": "192.168.1.102", "port": 8001,
+        })
+        self.assertEqual(remote["DJANGO_INTERNAL_URL"], "http://192.168.1.101:8080/")
+        self.assertNotIn("WS_INTERNAL_NOTIFY_TOKEN", remote)
+
+    def test_missing_keys_keep_anonymous_configuration_and_node_only_has_no_django_destination(self):
+        values = self.render_node(django_internal_auth_token="", ws_internal_notify_token="")
+        self.assertEqual(values["DJANGO_INTERNAL_AUTH_TOKEN"], "")
+        self.assertEqual(values["WS_INTERNAL_NOTIFY_TOKEN"], "")
+        node_only = self.render_node(app_django_enabled=False)
+        self.assertEqual(node_only["DJANGO_INTERNAL_URL"], "")
+        self.assertEqual(node_only["DJANGO_INTERNAL_AUTH_TOKEN"], "")
+        self.assertEqual(node_only["WS_ALLOWED_ORIGINS"], "https://example.com,https://www.example.com")
+
+    def test_gunicorn_and_celery_use_selected_module_not_application_instance_name(self):
+        environment = Environment(undefined=StrictUndefined)
+        template = environment.from_string((ROLE / "templates/gunicorn.service.j2").read_text())
+        play = yaml.safe_load((ROLE.parents[1] / "deploy-code.yml").read_text())[0]
+        celery_app = environment.from_string(play["vars"]["celery_app"])
+        for module in ["prosango", "template"]:
+            with self.subTest(module=module):
+                unit = template.render(
+                    app_name=f"{module}_staging", app_user=f"{module}_staging",
+                    app_code_dir=f"/srv/{module}_staging/current/django-project",
+                    app_virtualenv=f"/srv/{module}_staging/.venv",
+                    app_environment_file=f"/srv/{module}_staging/.env",
+                    app_bind="127.0.0.1:8000", app_workers=2, app_django_module=module,
+                )
+                self.assertIn(f"/bin/gunicorn {module}.wsgi:application ", unit)
+                self.assertEqual(celery_app.render(app_django_module=module), module)
+
+    def test_private_origin_is_enabled_when_node_is_remote_even_if_django_is_on_gateway(self):
+        defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        template = environment.from_string(defaults["app_django_origin_enabled"])
+        for django_host, node_host, django_enabled, expected in [
+            ("gateway", "gateway", True, "False"),
+            ("gateway", "node", True, "True"),
+            ("django", "django", True, "True"),
+            ("gateway", "node", False, "False"),
+        ]:
+            with self.subTest(django_host=django_host, node_host=node_host):
+                result = template.render(
+                    inventory_hostname="gateway", app_django_enabled=django_enabled,
+                    app_django_host=django_host, app_ts_backend_enabled=True,
+                    app_ts_backend_host=node_host, app_ts_ws_backend_enabled=False,
+                )
+                self.assertEqual(result, expected)
+
+    def test_default_ws_origins_match_gateway_http_or_https_scheme(self):
+        defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        environment.filters["regex_replace"] = lambda value, pattern, replacement: re.sub(
+            pattern, replacement, value,
+        )
+        expression = environment.compile_expression(
+            defaults["app_ws_allowed_origins"].removeprefix("{{").removesuffix("}}").strip()
+        )
+        for tls, scheme in [(False, "http"), (True, "https")]:
+            self.assertEqual(
+                expression(app_domains=["example.com", "www.example.com"], certbot_enabled=tls),
+                [f"{scheme}://example.com", f"{scheme}://www.example.com"],
+            )
 
 
 class CeleryServiceTests(unittest.TestCase):
@@ -310,6 +475,37 @@ class CeleryServiceTests(unittest.TestCase):
         self.assertEqual(urllib.parse.unquote(parsed.password), 'p/a:ss@word"%')
         self.assertEqual(urllib.parse.unquote(parsed.path[1:]), "/application")
         self.assertNotIn('p/a:ss@word"%', environment)
+
+    def test_default_result_backend_reuses_database_credentials_with_safe_url_encoding(self):
+        defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        template = environment.from_string(defaults["celery_result_backend"])
+        for host in ["127.0.0.1", "2001:db8::1"]:
+            with self.subTest(host=host):
+                backend = template.render(
+                    app_deploy_code=True, app_django_enabled=True,
+                    app_database_user="user/name", app_database_password='p/a:ss@word"%',
+                    app_database_host=host, app_database="app/name",
+                )
+                parsed = urllib.parse.urlsplit(backend)
+                self.assertEqual(parsed.scheme, "db+postgresql+psycopg")
+                self.assertEqual(parsed.hostname, host)
+                self.assertEqual(parsed.port, 5432)
+                self.assertEqual(urllib.parse.unquote(parsed.username), "user/name")
+                self.assertEqual(urllib.parse.unquote(parsed.password), 'p/a:ss@word"%')
+                self.assertEqual(urllib.parse.unquote(parsed.path[1:]), "app/name")
+
+    def test_non_django_deployments_do_not_need_database_credentials_for_results(self):
+        defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        template = environment.from_string(defaults["celery_result_backend"])
+        for deploy_code, django_enabled in [(False, True), (True, False)]:
+            with self.subTest(deploy_code=deploy_code, django_enabled=django_enabled):
+                self.assertEqual(template.render(
+                    app_deploy_code=deploy_code, app_django_enabled=django_enabled,
+                ), "")
 
 
 if __name__ == "__main__":

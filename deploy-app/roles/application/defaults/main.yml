@@ -3,17 +3,29 @@ app_name: ""
 app_user: "{{ app_name }}"
 app_home: "/srv/{{ app_name }}"
 app_domains: []
+app_nginx_shared_site: ""
+app_static_location: /static/
+app_media_location: /media/
+app_session_cookie_name: sessionid
+app_csrf_cookie_name: csrftoken
 app_upstream: http://127.0.0.1:8000
 app_media_enabled: false
 app_memcached_enabled: false
 app_memcached_location: 127.0.0.1:11211
 app_deploy_code: false
 app_django_enabled: true
+app_django_module: prosango
 app_django_host: "{{ inventory_hostname }}"
 app_django_location: /
+app_cookie_path: "{{ app_django_location }}"
 app_django_origin_bind: 127.0.0.1
 app_django_origin_port: 8080
 app_django_address: "{{ app_django_origin_bind }}"
+app_django_origin_enabled: >-
+  {{ app_django_enabled | bool and
+     (app_django_host != inventory_hostname
+      or (app_ts_backend_enabled | bool and app_ts_backend_host != app_django_host)
+      or (app_ts_ws_backend_enabled | bool and app_ts_ws_backend_host != app_django_host)) }}
 app_ts_backend_enabled: false
 app_ts_backend_host: "{{ inventory_hostname }}"
 app_ts_backend_location: /api/
@@ -30,6 +42,8 @@ app_ts_ws_backend_address: "{{ app_ts_ws_backend_bind_host }}"
 app_ts_ws_backend_port: 8002
 app_ts_ws_backend_upstream: >-
   http://{{ app_ts_ws_backend_address }}:{{ app_ts_ws_backend_port }}
+app_ws_allowed_origins: >-
+  {{ app_domains | map('regex_replace', '^', 'https://' if certbot_enabled | bool else 'http://') | list }}
 app_node_components:
   - name: typescript-backend
     enabled: "{{ app_ts_backend_enabled | bool }}"
@@ -44,7 +58,15 @@ app_node_components:
 app_bind: 127.0.0.1:8000
 app_workers: 2
 django_secret_key: ""
-celery_result_backend: ""
+django_internal_auth_token: ""
+ws_internal_notify_token: ""
+celery_result_backend: >-
+  {{ 'db+postgresql+psycopg://'
+     + (app_database_user | urlencode | replace('/', '%2F')) + ':'
+     + (app_database_password | urlencode | replace('/', '%2F')) + '@'
+     + ('[' + app_database_host + ']' if ':' in app_database_host else app_database_host)
+     + ':5432/' + (app_database | urlencode | replace('/', '%2F'))
+     if app_deploy_code | bool and app_django_enabled | bool else '' }}
 app_database_host: >-
   {{ '127.0.0.1' if app_postgresql_host == (app_django_host if app_deploy_code | bool else inventory_hostname)
      else hostvars[app_postgresql_host]['ansible_host'] | default(app_postgresql_host) }}

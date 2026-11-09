@@ -201,10 +201,15 @@ python -m unittest discover -s deploy-app/tests -v
 ansible-playbook -i provision-hosts/inventory.yml deploy-app/deploy.yml --syntax-check
 ```
 
-## Deploy Prosango code and prebuilt assets
+## Deploy Prosango or Template code and prebuilt assets
 
-Use `deploy-code.yml` to deploy the sibling Prosango checkout. Build the frontend
-yourself beforehand, using the same checkout/branch as the Django code:
+Use `deploy-code.yml` to deploy either sibling checkout. `app_django_module`
+defaults to `prosango`; set it to `template` for `../template-project`.
+The default source directory is the sibling `<app_django_module>-project`.
+This also selects Gunicorn's WSGI module and Celery's default app, independently
+of `app_name` (which may be `template_staging`, for example).
+Build the frontend yourself beforehand, using the same checkout/branch as the
+Django code:
 
 ```sh
 cd ../prosango-project
@@ -217,6 +222,7 @@ Example `app.yml` for IP-only hosting:
 
 ```yaml
 app_name: prosango
+app_django_module: prosango
 app_domains: ["192.168.1.100"]
 app_source_dir: ../prosango-project
 app_frontend_dist: ../prosango-project/typescript-frontend/dist
@@ -226,6 +232,27 @@ celery_beat_enabled: true
 ddns_enabled: false
 certbot_enabled: false
 ```
+
+For Template, use this instead:
+
+```yaml
+app_name: template
+app_django_module: template
+app_domains: ["192.168.1.100"]
+app_media_enabled: true
+celery_enabled: true
+celery_beat_enabled: true
+app_ts_backend_enabled: true
+app_ts_ws_backend_enabled: true
+ddns_enabled: false
+certbot_enabled: false
+```
+
+Build from `../template-project` in this case, including both enabled TypeScript
+backends using the commands below. Use a separate `template-secrets.yml` Vault.
+If both apps share a server, give them distinct public domains and backend ports
+(including `app_bind`), users, database/broker namespaces and app names. Reusing
+the same IP-only `app_domains` on both apps does not select between Nginx sites.
 
 Paths supplied in `app_source_dir` and `app_frontend_dist` are controller paths;
 prefer absolute paths when overriding them. Defaults locate the sibling checkout
@@ -239,9 +266,10 @@ ansible-playbook -i provision-hosts/inventory.yml deploy-app/deploy-code.yml \
 ```
 
 The playbook packages tracked and non-ignored new Django source files plus the
-prebuilt frontend `dist`. It does not run npm/Rsbuild or install Node on the
-target. Local `.env` files, virtualenvs, SQLite databases, uploads, and Python
-caches are excluded. The Prosango checkout must contain the new environment,
+prebuilt frontend `dist`. It does not build frontend or backend assets on the
+target; Node is installed only for enabled TypeScript services. Local `.env`
+files, virtualenvs, SQLite databases, uploads, and Python
+caches are excluded. The selected checkout must contain the environment,
 PostgreSQL, Celery, and Gunicorn support; those changes need not be pushed for
 this controller-source deployment.
 
@@ -252,6 +280,8 @@ PostgreSQL authentication is applied before `migrate --noinput`; then
 `collectstatic --clear` copies Django and prebuilt frontend files to the persistent
 static root. Gunicorn starts on `127.0.0.1:8000` and is health-checked before the
 remaining Celery/Nginx configuration.
+Prosango requires its editor manifest as well as the main frontend manifest;
+Template's frontend has no editor and needs only `dist/manifest.json`.
 
 Collected static files are assigned to `www-data`. Nginx also joins the
 application's read-only group so it can serve nested Django uploads, which may
@@ -337,13 +367,90 @@ HTTP/WebSocket prefix before proxying, so `/api/healthz` reaches `/healthz` and
 clients connect at `ws://<domain>/ws/` (or `wss://` with TLS). Non-root prefixes
 have a slash-adding redirect; use the trailing slash directly for WebSockets.
 Django can also use `/django/`; deployment sets its script prefix so reversed
-admin URLs remain correct. Static/media stay at `/static/` and `/media/`.
+admin URLs remain correct. Static/media default to `/static/` and `/media/`.
+
+### Template beside Prosango on the same IP
+
+To attach Template to an existing Prosango Nginx site rather than create a
+second virtual host with the same IP/server name, use:
+
+```yaml
+app_name: template
+app_django_module: template
+app_domains: ["192.168.1.100"]
+app_nginx_shared_site: prosango
+app_django_location: /template/
+app_bind: 127.0.0.1:18000
+app_static_location: /template/static/
+app_media_location: /template/media/
+app_session_cookie_name: template_sessionid
+app_csrf_cookie_name: template_csrftoken
+app_cookie_path: /template/
+app_ts_backend_enabled: true
+app_ts_backend_location: /template/api/
+app_ts_backend_port: 18001
+app_ts_ws_backend_enabled: true
+app_ts_ws_backend_location: /template/ws/
+app_ts_ws_backend_port: 18002
+ddns_enabled: false
+certbot_enabled: false
+```
+
+The existing site must already be installed. Deployment adds a backed-up
+include line and writes only Template's locations under
+`/etc/nginx/app-locations/prosango/template.conf`; it does not replace Prosango's
+routes or restart its application processes. This checkout's standalone site
+template retains the include on later Prosango deployments.
+
+Shared-site deployments require non-root route prefixes, separate static/media
+locations, and disabled per-app Certbot/DDNS. Template reads the generated
+static/media URL and cookie settings; older Prosango versions do not implement
+these isolation settings. `/template` redirects to `/template/`. Each app must
+also use its own name, database, broker namespace and unoccupied backend ports.
 
 Django's environment also receives `DJANGO_TS_BACKEND_URL` and
 `DJANGO_TS_WS_BACKEND_URL`: the enabled components' public location prefixes,
 or empty values when disabled. These appear as `data-ts-backend-url` and
 `data-ts-ws-backend-url` on public-page bodies. They refer to the gateway paths,
 not private backend servers, and work with custom locations and gateway TLS.
+
+### Optional internal authentication and notifications
+
+For Template's internal features, add these optional keys to the encrypted
+application secrets file:
+
+```yaml
+django_internal_auth_token: ""
+ws_internal_notify_token: ""
+```
+
+Generate them with `update-secret.py <app_name> django_internal_auth_token`
+and `update-secret.py <app_name> ws_internal_notify_token`, then redeploy.
+Deployment passes the shared auth key to Django and both Node processes, and
+the notification key only to the WS process. Runtime environment files are
+mode 0600 and their template contents are hidden from Ansible logs. Prosango
+versions without these features simply ignore the extra environment variables.
+Omitted/empty keys leave those features disabled and produce deployment/startup
+warnings; anonymous HTTP and WebSocket access remains available.
+
+Node's `DJANGO_INTERNAL_URL` targets Gunicorn on the same host or the private
+Django origin on a separate host, without the public Django mount prefix.
+These destination hosts are included in Django's allowed hosts. WS processes
+receive `WS_ALLOWED_ORIGINS` from `app_domains`, using HTTP or HTTPS according
+to `certbot_enabled`. Override `app_ws_allowed_origins` with a list of exact
+browser origins if external TLS termination or nonstandard public ports differ.
+
+The public Nginx gateway returns 404 for `<django-prefix>internal/` and
+`<backend-prefix>internal/`. Trusted senders must call `/internal/notify/`
+directly on the WS service's private host/port, using the notification key;
+do not use the public `/ws/` gateway path.
+
+Django code deployments automatically store Celery results in the application's
+PostgreSQL database, using its database host, user and Vault password. No
+`celery_result_backend` URL is needed in the application configuration.
+Override `celery_result_backend` for a different store, or explicitly set
+`celery_result_backend: ""` to disable result storage. Infrastructure-only and
+Node-only deployments do not enable result storage automatically.
 
 ### Separate servers behind one Nginx gateway
 
@@ -398,10 +505,15 @@ the gateway proxies those paths to it. By default PostgreSQL/RabbitMQ are also
 on the Django host. Existing separate database/broker settings remain supported.
 Celery runs beside Django. Memcached, if enabled, must be reachable from Django,
 not merely from the gateway.
+The private Django origin is also installed when Django runs on the gateway
+but a Node backend runs elsewhere. Set `app_django_origin_bind` to Django's
+private IPv4 address for this layout, too.
 
 Public TLS/DDNS stay on the gateway. Internal traffic is HTTP: use a trusted
-private network and firewall origin/backend ports so only the gateway can reach
-them. Prefixes and private addresses are not authentication. Only expose public
+private network and firewall origin/backend ports for the gateway and explicitly
+trusted service hosts. Node hosts need the Django origin for session checks;
+trusted notification senders need the WS service port. Prefixes and private
+addresses are not authentication. Only expose public
 80/443; SSH and other service ports should be restricted appropriately.
 
 Before moving a component to a new inventory host, disable it using its old

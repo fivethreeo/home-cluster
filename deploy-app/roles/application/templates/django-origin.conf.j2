@@ -2,11 +2,11 @@ server {
     listen {{ app_django_origin_bind }}:{{ app_django_origin_port | int }};
     server_name {{ app_domains | join(' ') }};
 
-    location /static/ {
+    location {{ app_static_location }} {
         alias {{ app_home }}/static/;
     }
 {% if app_media_enabled | bool %}
-    location ^~ /media/ {
+    location ^~ {{ app_media_location }} {
         alias {{ app_home }}/media/;
         autoindex off;
         disable_symlinks on;

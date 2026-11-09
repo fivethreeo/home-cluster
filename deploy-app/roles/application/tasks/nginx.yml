@@ -7,6 +7,7 @@
     group: root
     mode: "0644"
   notify: Apply application nginx configuration
+  when: not app_nginx_shared_site
 
 - name: Enable application Nginx virtual host
   ansible.builtin.file:
@@ -14,6 +15,51 @@
     dest: "/etc/nginx/sites-enabled/{{ app_name }}"
     state: link
   notify: Apply application nginx configuration
+  when: not app_nginx_shared_site
+
+- name: Attach prefixed routes to an existing application site
+  when: app_nginx_shared_site | length > 0
+  block:
+    - name: Check the shared Nginx site exists
+      ansible.builtin.stat:
+        path: "/etc/nginx/sites-available/{{ app_nginx_shared_site }}"
+      register: app_shared_nginx_site
+
+    - name: Require the existing shared virtual host
+      ansible.builtin.assert:
+        that: app_shared_nginx_site.stat.isreg | default(false)
+
+    - name: Create shared application route directory
+      ansible.builtin.file:
+        path: "/etc/nginx/app-locations/{{ app_nginx_shared_site }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Write only this application's prefixed routes
+      ansible.builtin.template:
+        src: nginx-locations.conf.j2
+        dest: "/etc/nginx/app-locations/{{ app_nginx_shared_site }}/{{ app_name }}.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Apply application nginx configuration
+
+    - name: Add the shared route include without replacing existing routes
+      ansible.builtin.lineinfile:
+        path: "/etc/nginx/sites-available/{{ app_nginx_shared_site }}"
+        regexp: '^\s*include /etc/nginx/app-locations/{{ app_nginx_shared_site }}/\*\.conf;'
+        insertafter: '^\s*server_name .*;'
+        line: "    include /etc/nginx/app-locations/{{ app_nginx_shared_site }}/*.conf;"
+        backup: true
+      notify: Apply application nginx configuration
+
+    - name: Disable a conflicting standalone site for this application
+      ansible.builtin.file:
+        path: "/etc/nginx/sites-enabled/{{ app_name }}"
+        state: absent
+      notify: Apply application nginx configuration
 
 - name: Apply database and web configuration changes
   ansible.builtin.meta: flush_handlers

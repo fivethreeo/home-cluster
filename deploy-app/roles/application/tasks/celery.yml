@@ -42,6 +42,14 @@
           Install application code, Celery in app_virtualenv, and a protected
           systemd-compatible app_environment_file before enabling these services.
 
+    - name: Create shared Celery state parent directory
+      ansible.builtin.file:
+        path: /var/lib/celery
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
     - name: Create persistent application Celery state directory
       ansible.builtin.file:
         path: "/var/lib/celery/{{ app_name }}"

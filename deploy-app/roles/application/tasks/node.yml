@@ -87,6 +87,7 @@
         owner: "{{ app_user }}"
         group: "{{ app_user }}"
         mode: "0600"
+      no_log: true
 
     - name: Install the TypeScript systemd service
       ansible.builtin.template:

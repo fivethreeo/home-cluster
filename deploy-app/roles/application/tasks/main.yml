@@ -9,6 +9,10 @@
       - app_domains | length > 0
       - app_domains | reject('match', '^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$') | list | length == 0
       - app_upstream is match('^https?://[a-zA-Z0-9_.:-]+$')
+      - app_static_location is match('^/([a-zA-Z0-9_-]+/)+$')
+      - app_media_location is match('^/([a-zA-Z0-9_-]+/)+$')
+      - not app_nginx_shared_site or app_nginx_shared_site is match('^[a-z][a-z0-9_]{0,30}$')
+      - not app_nginx_shared_site or app_nginx_shared_site != app_name
     fail_msg: >-
       Set valid application names, domains and upstream URLs.
 
@@ -55,12 +59,15 @@
       - app_active_locations | unique | list | length == app_active_locations | length
       - app_active_locations | reject('match', '^/([a-zA-Z0-9_-]+/)*$') | list | length == 0
       - not (app_django_enabled | bool) or app_active_locations | select('match', '^/(static|media)/') | list | length == 0
+      - not app_nginx_shared_site or '/' not in app_active_locations
+      - not app_nginx_shared_site or not (certbot_enabled | bool or ddns_enabled | bool)
+      - not app_nginx_shared_site or not (app_django_enabled | bool) or (app_static_location != '/static/' and app_media_location != '/media/')
       - app_active_sockets | unique | list | length == app_active_sockets | length
       - app_active_ports | map('int') | min > 1023
       - app_active_ports | map('int') | max < 65536
       - app_ts_backend_upstream is match('^http://[a-zA-Z0-9_.:-]+$')
       - app_ts_ws_backend_upstream is match('^http://[a-zA-Z0-9_.:-]+$')
-      - not (app_django_enabled | bool) or app_django_host == inventory_hostname or app_django_origin_bind is match(app_private_ipv4)
+      - not (app_django_origin_enabled | bool) or app_django_origin_bind is match(app_private_ipv4)
       - not (app_ts_backend_enabled | bool) or app_ts_backend_host == inventory_hostname or app_ts_backend_bind_host is match(app_private_ipv4)
       - not (app_ts_ws_backend_enabled | bool) or app_ts_ws_backend_host == inventory_hostname or app_ts_ws_backend_bind_host is match(app_private_ipv4)
     fail_msg: >-
@@ -77,14 +84,14 @@
     app_active_sockets: >-
       {{ ([app_django_host + ':' + app_bind] if app_django_enabled | bool else [])
          + ([app_django_host + ':' + app_django_origin_bind + ':' + (app_django_origin_port | string)]
-            if app_django_enabled | bool and app_django_host != inventory_hostname else [])
+            if app_django_origin_enabled | bool else [])
          + ([app_ts_backend_host + ':' + app_ts_backend_bind_host + ':' + (app_ts_backend_port | string)]
             if app_ts_backend_enabled | bool else [])
          + ([app_ts_ws_backend_host + ':' + app_ts_ws_backend_bind_host + ':' + (app_ts_ws_backend_port | string)]
             if app_ts_ws_backend_enabled | bool else []) }}
     app_active_ports: >-
       {{ ([app_bind.split(':')[-1]] if app_django_enabled | bool else [])
-         + ([app_django_origin_port] if app_django_enabled | bool and app_django_host != inventory_hostname else [])
+         + ([app_django_origin_port] if app_django_origin_enabled | bool else [])
          + ([app_ts_backend_port] if app_ts_backend_enabled | bool else [])
          + ([app_ts_ws_backend_port] if app_ts_ws_backend_enabled | bool else []) }}
   when: app_deploy_code | bool
@@ -166,6 +173,7 @@
       - app_environment_file is match('^/[a-zA-Z0-9_./-]+$')
       - app_bind is match('^127[.]0[.]0[.]1:[0-9]+$')
       - app_workers | int > 0
+      - app_django_module is match('^[a-zA-Z_][a-zA-Z0-9_]*$')
       - not (app_memcached_enabled | bool) or app_memcached_location | trim | length > 0
       - django_secret_key | length > 0
       - "'\n' not in django_secret_key"
@@ -177,6 +185,20 @@
     fail_msg: Supply safe deployment paths, a loopback backend address, an enabled cache location and django_secret_key in Vault.
   when: app_deploy_code | bool and app_django_enabled | bool
   no_log: true
+
+- name: Warn when optional internal session authentication is disabled
+  ansible.builtin.debug:
+    msg: >-
+      DJANGO_INTERNAL_AUTH_TOKEN is not set (django_internal_auth_token);
+      internal session authentication is disabled. TypeScript clients remain anonymous.
+  when: app_deploy_code | bool and app_django_enabled | bool and not django_internal_auth_token
+
+- name: Warn when optional internal WebSocket notifications are disabled
+  ansible.builtin.debug:
+    msg: >-
+      WS_INTERNAL_NOTIFY_TOKEN is not set (ws_internal_notify_token);
+      internal WebSocket notifications are disabled. Anonymous WebSockets remain available.
+  when: app_deploy_code | bool and app_ts_ws_backend_enabled | bool and not ws_internal_notify_token
 
 - name: Inspect managed services before code deployment
   ansible.builtin.service_facts:
@@ -243,7 +265,7 @@
     path: "/etc/nginx/sites-enabled/{{ app_name }}-origin"
     state: absent
   delegate_to: "{{ app_django_host }}"
-  when: app_deploy_code | bool and not (app_django_enabled | bool)
+  when: app_deploy_code | bool and not (app_django_origin_enabled | bool)
   notify: Apply Django origin nginx configuration
 
 - name: Deploy selected TypeScript components

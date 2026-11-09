@@ -43,7 +43,7 @@
     virtualenv: "{{ app_virtualenv }}"
     virtualenv_command: /usr/bin/python3 -m venv
 
-- name: Write protected Prosango runtime configuration
+- name: Write protected Django runtime configuration
   ansible.builtin.template:
     src: prosango.env.j2
     dest: "{{ app_environment_file }}"
@@ -158,7 +158,7 @@
   until: app_backend_health is succeeded
 
 - name: Configure the separate private Django origin
-  when: app_django_host != inventory_hostname
+  when: app_django_origin_enabled | bool
   block:
     - name: Install private Django origin configuration
       ansible.builtin.template:
