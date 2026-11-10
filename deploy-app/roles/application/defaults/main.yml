@@ -103,6 +103,7 @@ app_rabbitmq_user: "{{ app_name }}"
 app_rabbitmq_password: ""
 
 ddns_enabled: false
+ddns_update_interval: 1h
 ddns_domains: "{{ app_domains }}"
 # Empty means Domeneshop uses the requesting host's public IP.
 ddns_ip: ""

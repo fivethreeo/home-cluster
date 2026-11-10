@@ -130,7 +130,8 @@ Private media needs application authorization instead of this public alias.
 
 Both features are opt-in and use Domeneshop credentials stored root-only on the
 web host. DDNS updates `ddns_domains` (default: `app_domains`) immediately and
-hourly via a per-application systemd timer. Domeneshop detects the requesting
+hourly by default via a per-application systemd timer. Set `ddns_update_interval`
+to change the interval, for example `6h`. Domeneshop detects the requesting
 host's public address; set `ddns_ip` to explicitly supply an IPv4/IPv6 address.
 
 Certbot and `certbot-dns-domeneshop` are installed in an isolated virtual

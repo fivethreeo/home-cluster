@@ -24,6 +24,14 @@ spec.loader.exec_module(ddns)
 
 
 class DynamicDnsTests(unittest.TestCase):
+    def test_ddns_timer_uses_the_configured_update_interval(self):
+        environment = Environment(loader=FileSystemLoader(ROLE / "templates"), undefined=StrictUndefined)
+        defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+        timer = environment.get_template("ddns.timer.j2").render(
+            defaults | {"app_name": "example", "ddns_update_interval": "6h"}
+        )
+        self.assertIn("OnUnitActiveSec=6h", timer)
+
     def setUp(self):
         self.config = {
             "token": "test-token",

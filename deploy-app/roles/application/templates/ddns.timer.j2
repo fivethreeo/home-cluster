@@ -1,9 +1,9 @@
 [Unit]
-Description=Hourly Domeneshop DDNS for {{ app_name }}
+Description=Domeneshop DDNS for {{ app_name }}
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=1h
+OnUnitActiveSec={{ ddns_update_interval }}
 RandomizedDelaySec=60
 
 [Install]

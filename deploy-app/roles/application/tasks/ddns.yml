@@ -35,7 +35,7 @@
         mode: "0644"
       register: app_ddns_timer
 
-    - name: Enable hourly application DDNS updates
+    - name: Enable application DDNS updates
       ansible.builtin.systemd_service:
         name: "domeneshop-ddns-{{ app_name }}.timer"
         enabled: true
