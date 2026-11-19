@@ -1,0 +1,83 @@
+---
+- name: Validate backup storage and credentials
+  ansible.builtin.include_tasks: backup-validate.yml
+
+- name: Provision AWS backup storage and project credentials
+  ansible.builtin.include_tasks: backup-provision.yml
+  when: app_backup_provision_aws | bool
+
+- name: Retrieve managed backup credentials
+  when: app_backup_aws_secret_id | length > 0
+  no_log: true
+  block:
+    - name: Read the current backup secret on the controller
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --region
+          - "{{ app_backup_region }}"
+          - --secret-id
+          - "{{ app_backup_aws_secret_id }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      environment:
+        AWS_PAGER: ""
+        AWS_CLI_AUTO_PROMPT: "off"
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+      register: app_backup_aws_secret_result
+
+    - name: Require credentials for this project and bucket
+      ansible.builtin.assert:
+        that:
+          - credentials is mapping
+          - credentials.ProjectName == app_name
+          - credentials.BucketName == app_backup_bucket
+          - credentials.AccessKeyId is string
+          - credentials.AccessKeyId | length > 0
+          - credentials.SecretAccessKey is string
+          - credentials.SecretAccessKey | length > 0
+        fail_msg: The managed secret must contain credentials for this project and backup bucket.
+      vars:
+        credentials: "{{ app_backup_aws_secret_result.stdout | from_json }}"
+
+- name: Install backup tools
+  ansible.builtin.apt:
+    name:
+      - restic
+      - postgresql-client
+    state: present
+
+- name: Create private backup configuration directory
+  ansible.builtin.file:
+    path: "{{ app_secrets_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Write private backup configuration and credentials
+  ansible.builtin.template:
+    src: backup.json.j2
+    dest: "{{ app_secrets_dir }}/backup.json"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install application backup runner
+  ansible.builtin.copy:
+    src: application-backup.py
+    dest: /usr/local/sbin/ansible-app-backup
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Initialize an empty repository or verify the existing repository
+  ansible.builtin.include_tasks: backup-initialize.yml

@@ -1,0 +1,79 @@
+---
+- name: Manage AWS backup resources on the controller
+  delegate_to: localhost
+  become: false
+  environment:
+    AWS_PAGER: ""
+    AWS_CLI_AUTO_PROMPT: "off"
+  block:
+    - name: Deploy the shared backup bucket stack
+      ansible.builtin.command:
+        argv:
+          - aws
+          - cloudformation
+          - deploy
+          - --region
+          - "{{ app_backup_region }}"
+          - --stack-name
+          - "{{ app_backup_bucket_stack_name }}"
+          - --template-file
+          - "{{ role_path }}/../../aws/backup-bucket.yml"
+          - --parameter-overrides
+          - "BucketName={{ app_backup_bucket }}"
+          - --no-fail-on-empty-changeset
+      register: app_backup_bucket_deployment
+      changed_when: "'Successfully created/updated stack' in app_backup_bucket_deployment.stdout"
+      when:
+        - app_backup_manage_bucket | bool
+        - not ansible_check_mode
+
+    - name: Deploy the project backup identity and encrypted credentials
+      ansible.builtin.command:
+        argv: >-
+          {{ ['aws', 'cloudformation', 'deploy', '--region', app_backup_region,
+              '--stack-name', app_backup_project_stack_name,
+              '--template-file', role_path + '/../../aws/backup-project.yml',
+              '--capabilities', 'CAPABILITY_IAM', '--no-fail-on-empty-changeset',
+              '--parameter-overrides', 'BucketName=' + app_backup_bucket,
+              'ProjectName=' + app_name]
+             + (['AccessKeySerial=' + (app_backup_access_key_serial | string)]
+                if app_backup_access_key_serial | string | length > 0 else []) }}
+      register: app_backup_project_deployment
+      changed_when: "'Successfully created/updated stack' in app_backup_project_deployment.stdout"
+      when: not ansible_check_mode
+
+    - name: Discover the project backup stack outputs
+      ansible.builtin.command:
+        argv:
+          - aws
+          - cloudformation
+          - describe-stacks
+          - --region
+          - "{{ app_backup_region }}"
+          - --stack-name
+          - "{{ app_backup_project_stack_name }}"
+          - --query
+          - "Stacks[0].Outputs"
+          - --output
+          - json
+      check_mode: false
+      changed_when: false
+      register: app_backup_project_stack
+
+    - name: Select the managed project secret without retrieving its value
+      vars:
+        stack_outputs: >-
+          {{ app_backup_project_stack.stdout | from_json
+             | items2dict(key_name='OutputKey', value_name='OutputValue') }}
+      block:
+        - name: Require stack outputs for the configured project repository
+          ansible.builtin.assert:
+            that:
+              - stack_outputs.Repository == app_backup_repository
+              - stack_outputs.CredentialsSecretArn | length > 0
+              - app_backup_aws_secret_id | length == 0 or app_backup_aws_secret_id == stack_outputs.CredentialsSecretArn
+            fail_msg: The project stack or supplied secret ARN does not match this application's backup configuration.
+
+        - name: Use the generated project credentials
+          ansible.builtin.set_fact:
+            app_backup_aws_secret_id: "{{ stack_outputs.CredentialsSecretArn }}"

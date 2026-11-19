@@ -99,6 +99,7 @@ class NginxSiteTests(unittest.TestCase):
             "app_django_enabled": True,
             "app_frontend_enabled": False,
             "app_frontend_only_update": False,
+            "app_frontend_dist_static_alias": False,
             "app_repository_dir": "/srv/example/current",
             "app_django_host": "web",
             "app_django_location": "/",
@@ -188,6 +189,17 @@ class NginxSiteTests(unittest.TestCase):
         self.assertIn("return 404;", site)
         self.assertIn("location ^~ /template/api/", site)
         self.assertNotIn("try_files /index.html", site)
+
+    def test_frontend_static_alias_can_target_the_dist_static_directory(self):
+        site = self.render(
+            False, filename="nginx-locations.conf.j2",
+            app_django_enabled=False, app_frontend_enabled=True,
+            app_frontend_html_location="/",
+            app_frontend_dist_static_alias=True,
+        )
+        self.assertIn(
+            "alias /srv/example/current/typescript-frontend/dist/static/;", site
+        )
 
     def test_frontend_only_defaults_to_html_at_the_configured_mount(self):
         site = self.render(

@@ -126,6 +126,323 @@ make arbitrary HTML/SVG uploads safe on the application origin. Restrict upload
 types or use a separate cookieless media domain for untrusted active content.
 Private media needs application authorization instead of this public alias.
 
+## Encrypted S3 database and media backups
+
+Backups are disabled by default. This feature supports Django, PostgreSQL and
+`/srv/<app_name>/media/` on the same host, using local PostgreSQL peer authentication
+as `postgres`. With backups enabled, the normal application deployment provisions
+AWS resources, discovers project credentials, initializes an empty repository
+and enables scheduled backups. Frontend-only applications
+such as Enjoy have no database/media backup to enable.
+
+All applications share the `safe-and-sound` S3 bucket in Stockholm (`eu-north-1`),
+with an independent encrypted restic repository per application: `prosango/`,
+`template/`, and so on. Never point two applications at the same repository.
+Use a globally unique bucket name if `safe-and-sound` is unavailable, and set
+`app_backup_bucket` to that name for every application. Each application's
+credentials need `s3:GetBucketLocation` on the bucket, `s3:ListBucket` and
+`s3:ListBucketVersions` restricted to its prefix and descendants, and
+`s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` on that prefix's objects.
+Deletion is required for locks and retention. Interactive AWS SSO can provision
+these resources but is not sufficient for unattended scheduled backups.
+Do not configure S3 lifecycle expiration of restic objects: deleting individual
+objects outside restic can corrupt retained snapshots.
+
+### AWS resources managed by deployment
+
+The controller needs an installed, authenticated AWS CLI with permission to
+provision CloudFormation, S3, IAM access keys and Secrets Manager resources
+(SSO is suitable). Select the intended AWS account before deployment.
+`app_backup_provision_aws` defaults to `true`: enabling backups lets the normal
+`deploy.yml` or `deploy-code.yml` invocation create/update the shared bucket
+stack and the application's project stack. No separate CloudFormation command
+or manually copied secret ARN is required.
+
+The shared stack defaults to `home-cluster-backups`; project stacks default to
+`home-cluster-backup-<app_name>` (underscores become hyphens). All projects sharing
+the bucket must use the same bucket name, region and shared stack name.
+Override `app_backup_bucket_stack_name` or `app_backup_project_stack_name` only
+to select an existing stack or deliberately establish separate ownership.
+Normal redeploys leave unchanged resources and repositories intact.
+
+For reference, the equivalent optional manual provisioning commands are:
+
+```sh
+backup_region=eu-north-1
+backup_bucket=replace-with-your-globally-unique-name
+aws cloudformation deploy \
+  --region "$backup_region" --stack-name home-cluster-backups \
+  --template-file deploy-app/aws/backup-bucket.yml \
+  --parameter-overrides BucketName="$backup_bucket"
+
+aws cloudformation deploy \
+  --region "$backup_region" --stack-name home-cluster-backup-prosango \
+  --template-file deploy-app/aws/backup-project.yml \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides BucketName="$backup_bucket" ProjectName=prosango
+```
+
+`ProjectName` must equal `app_name`; prefixes are always `<app_name>/`, never
+the bucket root or a shared parent. Repeat the project command with a different
+stack name and `ProjectName` for each application. Prefixes need no folder
+creation: `restic init` writes the repository objects.
+`app_backup_repository`, if overridden, must still match the configured endpoint,
+bucket and application name exactly.
+
+The bucket blocks all public access, disables ACLs, uses server-side AES256
+encryption in addition to restic encryption, and denies insecure transport.
+Versioning is enabled, and both the bucket and its HTTPS-only policy are retained
+when the stack is deleted or replaced. Incomplete multipart uploads are aborted
+after seven days; no completed objects or historical versions expire.
+The project identity can only list its prefix and read/write/delete its objects
+(including multipart cleanup); it cannot delete historical object versions or
+manage the bucket. Do not attach broader policies to these dedicated users.
+
+The project stack automatically creates an IAM user without console access, an
+active access key, and a Secrets Manager secret encrypted with the AWS-managed
+`aws/secretsmanager` KMS key. Neither the access key nor its secret value appears
+in stack outputs. Retrieve only the secret ARN:
+
+```sh
+aws cloudformation describe-stacks \
+  --region "$backup_region" --stack-name home-cluster-backup-prosango \
+  --query 'Stacks[0].Outputs[?OutputKey==`CredentialsSecretArn`].OutputValue | [0]' \
+  --output text
+```
+
+Deployment discovers this ARN automatically. When AWS provisioning is disabled,
+set `app_backup_aws_secret_id` to the ARN in the application's non-secret YAML.
+Ansible uses the controller's authenticated AWS CLI to fetch
+the current secret in `app_backup_region`. Give that controller identity
+`secretsmanager:GetSecretValue` on only the relevant secret ARN. The backup IAM
+user does not need Secrets Manager permissions, and the application host does not
+need AWS CLI authentication.
+
+Retrieval and configuration writing suppress Ansible output. Credentials remain
+in controller memory and are written only into the existing root-owned `0600`
+backup configuration on the application host, not a plaintext controller file
+or Vault import. A failed retrieval, malformed secret, or mismatching project
+or bucket stops deployment; it never falls back to stale Vault credentials.
+Do not enable AWS CLI debug logging or print registered secret results.
+Keep the independent restic encryption password in Ansible Vault.
+
+Creation is automatic, but scheduled key rotation is not configured. To rotate,
+set `app_backup_access_key_serial` to a higher positive integer in the application's
+external YAML and redeploy. An empty value (the default) preserves an existing
+stack's serial, or uses the template's default for a new stack.
+CloudFormation replaces the key and updates the secret; it does not update
+application hosts by itself; the deployment then fetches the new credentials
+and installs them. Pause backup scheduling before a rotation deployment and
+verify a backup afterwards. This is not zero-downtime rotation: the old key is
+revoked during the stack update, before host configuration is refreshed.
+Unmanaged keys can consume the IAM user's key quota and prevent
+creation/replacement; manage them separately.
+Prefer short-lived credentials through an unattended identity mechanism when
+available; the current runner requires explicit keys.
+
+Deleting the project stack revokes its managed access key and removes the user,
+but retains the encrypted secret for explicit administrative cleanup. Retained
+secret versions may contain revoked keys; they are not usable recovery credentials.
+Retained secrets and secret retrieval incur
+[Secrets Manager charges](https://aws.amazon.com/secrets-manager/pricing/).
+
+These templates create **new** resources, not imports of an existing bucket.
+For a bucket managed outside this stack, set `app_backup_manage_bucket: false`
+and configure equivalent bucket protections separately; deployment still manages
+the project stack. Set `app_backup_provision_aws: false` to manage all AWS resources
+externally. Changing the bucket name or project name creates a new
+destination; it does not migrate backups. Keep the old repository and recovery
+password until migration and restore verification are complete.
+
+Versioning is an extra recovery layer, not immutable storage: administrators can
+still delete versions, and recovering a deleted restic repository may require
+restoring multiple related objects. Restic pruning creates delete markers and
+**does not reclaim historical-version storage**. Review version storage growth
+and plan any historical-version cleanup deliberately; never expire live restic
+objects. Storage, requests, retained versions and restore data transfer incur
+[S3 charges](https://aws.amazon.com/s3/pricing/).
+
+For production operation, enable S3 server access logging to a separate encrypted
+log bucket, CloudTrail S3 data events and CloudWatch request metrics/alarms.
+Those are not provisioned here and can add charges. Encrypt CloudTrail and
+CloudWatch log destinations with KMS; scope service delivery policies with
+`aws:SourceAccount`/`aws:SourceArn`. See
+[S3 security best practices](https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html).
+
+### Configure and run application backups
+
+Add these non-secret settings to each application's external YAML:
+
+```yaml
+app_backup_enabled: true
+app_media_enabled: true
+app_backup_bucket: safe-and-sound
+app_backup_region: eu-north-1
+app_backup_schedule: "*-*-* 03:00:00"
+app_backup_retention_days: 14
+```
+
+Use `ansible-vault edit` to add `app_backup_password` (an independently generated
+random password of at least 32 characters) to each application's external
+encrypted secrets file. Keep an independent recovery copy of the restic password;
+losing it makes backups unrecoverable. Do not put credentials in command arguments
+or Git. `update-secret.py` cannot add previously absent keys.
+
+For existing deployments using externally managed keys, set
+`app_backup_provision_aws: false`, leave `app_backup_aws_secret_id` empty and
+supply `app_backup_aws_access_key_id` and
+`app_backup_aws_secret_access_key` through Vault instead. Setting a secret ARN
+takes precedence over those legacy values.
+
+Run the normal code deployment with those application settings and the encrypted
+restic password. Backup setup is part of deployment, not a separate step:
+
+```sh
+ansible-playbook -i provision-hosts/inventory.yml deploy-app/deploy-code.yml \
+  --limit sugar -e @app.yml -e @secrets.yml --ask-vault-pass
+```
+
+The infrastructure-only `deploy-app/deploy.yml` also performs backup setup.
+To configure only backups without redeploying application services, the dedicated
+playbook remains available:
+
+```sh
+ansible-playbook -i provision-hosts/inventory.yml deploy-app/backup.yml \
+  --limit sugar -e @app.yml -e @secrets.yml --ask-vault-pass
+```
+
+Deployment inspects at most one object version or delete marker under the
+project prefix, using its own prefix-scoped credentials. Only a completely empty
+prefix is initialized. Existing objects, historical versions or delete markers
+prevent initialization; deployment verifies the repository and password instead.
+A missing config in a nonempty prefix, wrong password, or access/connectivity
+failure stops deployment rather than creating a replacement repository.
+Recovery deployments never initialize a new empty repository.
+
+Initialization and password verification complete before the timer is enabled.
+Check mode does not create/update AWS stacks or initialize repositories; it
+requires an existing project stack and access to its secret.
+
+After deployment, run and inspect the first backup. These commands run on the
+application host; replace `prosango` for other applications:
+
+```sh
+sudo systemctl start application-backup-prosango.service
+sudo ansible-app-backup /etc/ansible-app/prosango/backup.json restic snapshots
+sudo ansible-app-backup /etc/ansible-app/prosango/backup.json restic check --read-data
+sudo systemctl list-timers application-backup-prosango.timer
+sudo journalctl -u application-backup-prosango.service
+```
+
+Backups run daily at approximately 03:00 host time with up to 15 minutes' jitter
+and catch up after downtime.
+
+Each run exports and validates a custom-format PostgreSQL dump, then creates one
+encrypted snapshot containing that dump and media. Only a successful complete
+backup triggers app-scoped `forget --keep-within 14d --prune`. This retains roughly
+14 days relative to the newest snapshot, not an absolute object-expiration date;
+failed/partial backups do not prune history. Budget local space for one full
+database dump and the restic cache under `/var/lib/ansible-app-backup/<app_name>/`.
+The private plaintext dump is removed on success, failure and handled shutdown;
+forced termination or a host crash can leave it until the next run. Concurrent
+backups of the same application are rejected.
+
+Snapshots are marked `app-backup-complete` only after a fully successful upload.
+Automated listing, restore and retention require that marker; partial uploads
+cannot masquerade as complete recovery points. Snapshots left with `pending-*`
+tags after failures remain available for manual diagnosis/removal and are not
+automatically pruned.
+
+The database dump is transactionally consistent, but media is read live. Quiesce
+application and worker writes for strict cross-database/media consistency.
+Code, PostgreSQL global roles, environment files and credentials are not included;
+retain those separately and recreate infrastructure before disaster recovery.
+Monitor failed systemd services and snapshot age externally; this feature does
+not send failure notifications or replace regular restore drills.
+Setting `app_backup_enabled: false` and rerunning the playbook disables the timer
+without deleting credentials, cached state or S3 snapshots.
+
+### Restore to staging first
+
+On the application host, choose a snapshot from `restic snapshots` and restore
+to a new empty directory, never directly onto live data:
+
+```sh
+sudo install -d -m 0700 /var/tmp/prosango-restore
+sudo ansible-app-backup /etc/ansible-app/prosango/backup.json \
+  restic restore SNAPSHOT_ID --target /var/tmp/prosango-restore
+sudo -u postgres createdb -O prosango prosango_restore
+sudo cat /var/tmp/prosango-restore/var/lib/ansible-app-backup/prosango/database.dump \
+  | sudo -u postgres pg_restore --exit-on-error --no-owner --role=prosango \
+      --dbname=prosango_restore
+```
+
+Use a unique, nonexistent staging database name and an existing application
+database role (adjust `prosango` if `app_database_user` differs). The pipe lets
+PostgreSQL read the archive without making the root-only restore tree public.
+Verify database records and the restored `srv/prosango/media/` files before any
+live recovery. Plan downtime, stop web/worker writes, and restore database and
+media together. Preserve application ownership and `www-data` group/read
+permissions when copying media back; never run destructive live replacement
+commands without a separately verified recovery plan.
+
+### List or deploy-and-restore with Ansible variables
+
+For applications with the backup runner/configuration already installed, list
+snapshots without deploying code, installing packages, or changing services:
+
+```sh
+ansible-playbook -i provision-hosts/inventory.yml deploy-app/backup.yml \
+  --limit sugar -e @app.yml -e app_backup_list=true
+```
+
+Listing uses the protected credentials already on the host; it does not need
+the controller's Vault secrets. `app_backup_list=true` also works with
+`deploy-code.yml` and exits before source packaging or deployment. Snapshot
+listing and restoration are mutually exclusive.
+
+To deploy code and automatically replace the live database and media from one
+selected snapshot, supply its ID as a one-off extra variable:
+
+```sh
+ansible-playbook -i provision-hosts/inventory.yml deploy-app/deploy-code.yml \
+  --limit sugar -e @app.yml -e @secrets.yml --ask-vault-pass \
+  -e app_restore_snapshot=SNAPSHOT_ID
+```
+
+**This intentionally replaces live data.** Use an explicit snapshot ID from the
+list (at least eight hexadecimal characters), not `latest`. Do not save
+`app_restore_snapshot` in ordinary deployment configuration: every invocation
+with it requests a new recovery. AWS resources and an initialized repository
+must already exist. Recovery does not require enabling nightly backups.
+
+The deployment downloads and verifies the app's complete snapshot before
+stopping managed application processes and backup timers. It deploys the
+selected code, imports the dump into a separate database as the application
+role, prepares media with application ownership and Nginx-readable permissions,
+then swaps them into place before running migrations and health checks.
+Workers restart only after data restoration and migrations succeed.
+By default, queued tasks in the deployed Celery app's configured queues are
+discarded before services restart; opt out explicitly with
+`-e app_restore_discard_queued_tasks=false` if those jobs should survive.
+A fresh, persistent app-specific cache namespace prevents stale Memcached
+entries from resurfacing without flushing other applications' caches.
+
+The previous database is retained as `<database-prefix>_before_<token>` with
+connections disabled; previous media remains at
+`/srv/<app_name>/.media-before-<token>`. Downloads and a `restore.json` recovery
+manifest remain in the private staging directory printed by Ansible.
+Allow disk space for downloaded media, a replacement media tree and another
+database, in addition to the retained original data. Remove these recovery
+copies manually only after verification.
+
+Failed imports leave the live database/media untouched. A failure during
+cutover or migrations leaves web/worker processes stopped, with recovery data
+retained for operator inspection; it does not blindly restart inconsistent
+data or automatically roll back. Database and filesystem changes are not one
+atomic transaction. This workflow supports colocated Django/PostgreSQL/media
+and TypeScript components, full code deployments only, and not `--check`.
+
 ## DNS and certificates
 
 Both features are opt-in and use Domeneshop credentials stored root-only on the
@@ -200,7 +517,14 @@ Run focused tests with a Python environment containing Ansible's Jinja2 dependen
 ```sh
 python -m unittest discover -s deploy-app/tests -v
 ansible-playbook -i provision-hosts/inventory.yml deploy-app/deploy.yml --syntax-check
+ansible-playbook -i provision-hosts/inventory.yml deploy-app/backup.yml --syntax-check
 ```
+
+The backup integration test uses a disposable, socket-only local PostgreSQL
+cluster and a filesystem restic repository; it never contacts AWS or deployed
+services. It runs when `restic`, `initdb` and `pg_ctl` are on `PATH` under a
+non-root user, otherwise it skips. `BACKUP_TEST_PG_SHARE` can identify the
+PostgreSQL share directory when testing extracted, uninstalled server binaries.
 
 ## Deploy Prosango or Template code and prebuilt assets
 

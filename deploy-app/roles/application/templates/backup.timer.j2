@@ -1,0 +1,10 @@
+[Unit]
+Description=Scheduled database and media backup for {{ app_name }}
+
+[Timer]
+OnCalendar={{ app_backup_schedule }}
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

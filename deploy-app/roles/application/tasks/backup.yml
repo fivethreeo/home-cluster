@@ -1,0 +1,47 @@
+---
+- name: Reject restoration outside a code deployment
+  ansible.builtin.assert:
+    that: app_restore_snapshot | length == 0 or app_deploy_code | bool
+    fail_msg: Use deploy-code.yml with app_restore_snapshot to deploy and restore together.
+
+- name: Configure enabled application backups
+  when: app_backup_enabled | bool
+  block:
+    - name: Install backup runner and private configuration
+      ansible.builtin.include_tasks: backup-setup.yml
+
+    - name: Install application backup service
+      ansible.builtin.template:
+        src: backup.service.j2
+        dest: "/etc/systemd/system/application-backup-{{ app_name }}.service"
+        mode: "0644"
+      register: app_backup_service
+
+    - name: Install application backup timer
+      ansible.builtin.template:
+        src: backup.timer.j2
+        dest: "/etc/systemd/system/application-backup-{{ app_name }}.timer"
+        mode: "0644"
+      register: app_backup_timer
+
+    - name: Enable scheduled application backups
+      ansible.builtin.systemd_service:
+        name: "application-backup-{{ app_name }}.timer"
+        enabled: true
+        state: started
+        daemon_reload: "{{ app_backup_service.changed or app_backup_timer.changed }}"
+
+- name: Check for a previously managed backup timer
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/application-backup-{{ app_name }}.timer"
+  register: app_existing_backup_timer
+  when: not (app_backup_enabled | bool)
+
+- name: Disable previously managed backups when opted out
+  ansible.builtin.systemd_service:
+    name: "application-backup-{{ app_name }}.timer"
+    enabled: false
+    state: stopped
+  when:
+    - not (app_backup_enabled | bool)
+    - app_existing_backup_timer.stat.exists

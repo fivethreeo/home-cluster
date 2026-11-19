@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Prefix-scoped backup identity with automatically issued credentials stored in Secrets Manager.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@v3
+Parameters:
+  BucketName:
+    Type: String
+    Description: Existing shared backup bucket in this account and region.
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$"
+  ProjectName:
+    Type: String
+    Description: Must equal app_name; also names the isolated repository prefix.
+    AllowedPattern: "^[a-z][a-z0-9_]{0,30}$"
+  AccessKeySerial:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    Description: Increment to replace the access key, then redeploy backup configuration.
+Resources:
+  BackupUser:
+    Type: AWS::IAM::User
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Non-AWS hosts need an unattended identity isolated to one repository.
+        must:
+          - No console login, IAM management, or access to other project prefixes.
+          - Never grant object-version deletion; retain the versioning recovery layer.
+    Properties:
+      Path: /application-backups/
+      Policies:
+        - PolicyName: ProjectBackup
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: LocateBucket
+                Effect: Allow
+                Action: s3:GetBucketLocation
+                Resource:
+                  Fn::Sub: "arn:${AWS::Partition}:s3:::${BucketName}"
+              - Sid: ListProject
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                Resource:
+                  Fn::Sub: "arn:${AWS::Partition}:s3:::${BucketName}"
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - Fn::Sub: "${ProjectName}/*"
+              - Sid: ManageProjectRepository
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:AbortMultipartUpload
+                  - s3:ListMultipartUploadParts
+                Resource:
+                  Fn::Sub: "arn:${AWS::Partition}:s3:::${BucketName}/${ProjectName}/*"
+  BackupAccessKey:
+    Type: AWS::IAM::AccessKey
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Issue credentials without manual plaintext handling.
+        must:
+          - Never expose credentials in stack outputs.
+          - Revoke replaced or deleted keys instead of retaining them.
+    Properties:
+      UserName:
+        Ref: BackupUser
+      Serial:
+        Ref: AccessKeySerial
+      Status: Active
+  BackupCredentials:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Deliver generated credentials to the Ansible controller using KMS-encrypted storage.
+        must:
+          - Only authorized deployment identities may retrieve this secret.
+          - Preserve the secret on deletion; its IAM key is still revoked.
+    Properties:
+      Description:
+        Fn::Sub: "S3 backup credentials for ${ProjectName}"
+      SecretString:
+        Fn::Sub: >-
+          {"AccessKeyId":"${BackupAccessKey}",
+          "SecretAccessKey":"${BackupAccessKey.SecretAccessKey}",
+          "ProjectName":"${ProjectName}","BucketName":"${BucketName}"}
+Outputs:
+  BackupUserName:
+    Description: Dedicated backup user; its key is managed by this stack.
+    Value:
+      Ref: BackupUser
+  CredentialsSecretArn:
+    Description: Set app_backup_aws_secret_id to this ARN; no credentials are output.
+    Value:
+      Ref: BackupCredentials
+  Repository:
+    Description: Expected app_backup_repository; app_name must equal ProjectName.
+    Value:
+      Fn::Sub: "s3:https://s3.${AWS::Region}.${AWS::URLSuffix}/${BucketName}/${ProjectName}"

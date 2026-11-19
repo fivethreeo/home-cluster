@@ -17,7 +17,11 @@
 {% if app_django_enabled | bool or app_frontend_enabled | bool %}
     location {{ app_static_location }} {
 {% if not (app_django_enabled | bool) %}
+{% if app_frontend_dist_static_alias | bool %}
+        alias {{ app_frontend_repository_dir }}/typescript-frontend/dist/static/;
+{% else %}
         alias {{ app_frontend_repository_dir }}/typescript-frontend/dist/;
+{% endif %}
 {% elif app_django_host == inventory_hostname %}
         alias {{ app_home }}/static/;
 {% else %}

@@ -1,4 +1,13 @@
 ---
+- name: List backups without configuring application resources
+  when: app_backup_list | bool
+  block:
+    - name: Read application snapshots
+      ansible.builtin.include_tasks: backup-list.yml
+
+    - name: Finish this host after listing snapshots
+      ansible.builtin.meta: end_host
+
 - name: Validate application configuration
   ansible.builtin.assert:
     that:
@@ -125,6 +134,10 @@
   when: ddns_enabled | bool or certbot_enabled | bool
   no_log: true
 
+- name: Validate enabled application backups
+  ansible.builtin.import_tasks: backup-validate.yml
+  when: app_backup_enabled | bool
+
 - name: Create application group
   ansible.builtin.group:
     name: "{{ app_user }}"
@@ -213,19 +226,24 @@
   register: app_django_services
   when: app_deploy_code | bool
 
+- name: Prepare the selected recovery snapshot before downtime
+  ansible.builtin.include_tasks: restore-prepare.yml
+  when: app_restore_snapshot | length > 0
+
 - name: Stop application processes before updating code or credentials
   ansible.builtin.systemd_service:
     name: "{{ item }}"
     state: stopped
   delegate_to: "{{ app_django_host }}"
-  loop:
-    - "gunicorn-{{ app_name }}.service"
-    - "celery-{{ app_name }}.service"
-    - "celerybeat-{{ app_name }}.service"
+  loop: >-
+    {{ ['gunicorn-' + app_name + '.service', 'celery-' + app_name + '.service',
+        'celerybeat-' + app_name + '.service']
+       + (['typescript-backend-' + app_name + '.service',
+           'typescript-ws-backend-' + app_name + '.service'] if app_restore_snapshot else []) }}
   when:
     - app_deploy_code | bool
     - item in app_django_services.ansible_facts.services
-    - app_django_services.ansible_facts.services[item].state == 'running'
+    - app_restore_snapshot | length > 0 or app_django_services.ansible_facts.services[item].state == 'running'
 
 - name: Prepare the separate Django runtime host
   ansible.builtin.include_tasks:
@@ -299,7 +317,7 @@
     mode: "0700"
   when: >-
     ddns_enabled | bool or certbot_enabled | bool or
-    celery_enabled | bool or celery_beat_enabled | bool
+    celery_enabled | bool or celery_beat_enabled | bool or app_backup_enabled | bool
 
 - name: Configure Domeneshop dynamic DNS
   ansible.builtin.include_tasks: ddns.yml
@@ -316,3 +334,6 @@
 
 - name: Configure application Nginx site
   ansible.builtin.include_tasks: nginx.yml
+
+- name: Configure optional database and media backups
+  ansible.builtin.include_tasks: backup.yml

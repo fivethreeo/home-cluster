@@ -1,0 +1,21 @@
+---
+- name: Validate read-only snapshot listing
+  ansible.builtin.assert:
+    that:
+      - app_name is match('^[a-z][a-z0-9_]{0,30}$')
+      - app_restore_snapshot | length == 0
+    fail_msg: Listing and restore are mutually exclusive.
+
+- name: List snapshots from the installed protected application configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/ansible-app-backup
+      - "{{ app_secrets_dir }}/backup.json"
+      - list
+  register: app_backup_snapshots
+  changed_when: false
+  check_mode: false
+
+- name: Show application snapshot IDs and metadata
+  ansible.builtin.debug:
+    msg: "{{ app_backup_snapshots.stdout | from_json }}"

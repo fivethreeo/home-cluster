@@ -1,0 +1,73 @@
+---
+- name: Safely initialize or verify the application backup repository
+  when: not ansible_check_mode
+  no_log: true
+  vars:
+    credentials: >-
+      {{ (app_backup_aws_secret_result.stdout | from_json)
+         if app_backup_aws_secret_id | length > 0 else
+         {'AccessKeyId': app_backup_aws_access_key_id,
+          'SecretAccessKey': app_backup_aws_secret_access_key} }}
+  block:
+    - name: Check for current objects or historical versions in this project prefix
+      ansible.builtin.command:
+        argv:
+          - aws
+          - s3api
+          - list-object-versions
+          - --region
+          - "{{ app_backup_region }}"
+          - --endpoint-url
+          - "https://{{ app_backup_endpoint }}"
+          - --bucket
+          - "{{ app_backup_bucket }}"
+          - --prefix
+          - "{{ app_name }}/"
+          - --cli-input-json
+          - '{"MaxKeys":1}'
+          - --no-paginate
+          - --query
+          - 'length(Versions || `[]`) == `0` && length(DeleteMarkers || `[]`) == `0`'
+          - --output
+          - json
+      environment:
+        AWS_ACCESS_KEY_ID: "{{ credentials.AccessKeyId }}"
+        AWS_SECRET_ACCESS_KEY: "{{ credentials.SecretAccessKey }}"
+        AWS_SESSION_TOKEN: ""
+        AWS_SECURITY_TOKEN: ""
+        AWS_EC2_METADATA_DISABLED: "true"
+        AWS_PAGER: ""
+        AWS_CLI_AUTO_PROMPT: "off"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: app_backup_repository_empty
+      retries: 5
+      delay: 3
+      until: app_backup_repository_empty.rc == 0
+
+    - name: Require a definitive repository inspection result
+      ansible.builtin.assert:
+        that:
+          - app_backup_repository_empty.stdout | trim in ['true', 'false']
+          - not (app_backup_repository_empty.stdout | from_json) or app_restore_snapshot | length == 0
+        fail_msg: Cannot initialize an unverified repository or create a new repository during recovery.
+
+    - name: Initialize only a completely empty project repository
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/ansible-app-backup
+          - "{{ app_secrets_dir }}/backup.json"
+          - restic
+          - init
+      when: app_backup_repository_empty.stdout | from_json
+
+    - name: Verify the repository and encryption password before enabling backups
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/ansible-app-backup
+          - "{{ app_secrets_dir }}/backup.json"
+          - restic
+          - cat
+          - config
+      changed_when: false

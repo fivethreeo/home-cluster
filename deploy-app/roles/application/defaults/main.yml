@@ -19,6 +19,7 @@ app_frontend_enabled: "{{ app_django_enabled | bool or app_frontend_only_update 
 app_frontend_html_enabled: "{{ app_frontend_enabled | bool and (app_frontend_only_update | bool or not (app_django_enabled | bool)) }}"
 app_frontend_html_location: "{{ app_django_location }}"
 app_frontend_repository_dir: "{{ app_repository_dir }}"
+app_frontend_dist_static_alias: false
 app_django_module: prosango
 app_django_host: "{{ inventory_hostname }}"
 app_django_location: /
@@ -118,3 +119,23 @@ app_certbot_config_dir: "/etc/letsencrypt/{{ app_name }}"
 app_certbot_work_dir: "/var/lib/letsencrypt/{{ app_name }}"
 app_certbot_logs_dir: "/var/log/letsencrypt/{{ app_name }}"
 app_secrets_dir: "/etc/ansible-app/{{ app_name }}"
+
+app_backup_enabled: false
+app_backup_provision_aws: true
+app_backup_manage_bucket: true
+app_backup_bucket: safe-and-sound
+app_backup_bucket_stack_name: home-cluster-backups
+app_backup_project_stack_name: "home-cluster-backup-{{ app_name | replace('_', '-') }}"
+app_backup_access_key_serial: ""
+app_backup_region: eu-north-1
+app_backup_endpoint: "s3.{{ app_backup_region }}.amazonaws.com"
+app_backup_repository: "s3:https://{{ app_backup_endpoint }}/{{ app_backup_bucket }}/{{ app_name }}"
+app_backup_schedule: "*-*-* 03:00:00"
+app_backup_retention_days: 14
+app_backup_password: ""
+app_backup_aws_secret_id: ""
+app_backup_aws_access_key_id: ""
+app_backup_aws_secret_access_key: ""
+app_backup_list: false
+app_restore_snapshot: ""
+app_restore_discard_queued_tasks: true

@@ -22,6 +22,27 @@
     celery_app: "{{ app_django_module }}"
 
   tasks:
+    - name: List backups without deploying code or changing services
+      when: app_backup_list | default(false) | bool
+      block:
+        - name: List application snapshots
+          ansible.builtin.include_role:
+            name: application
+            tasks_from: backup-list
+
+        - name: Finish this host after listing snapshots
+          ansible.builtin.meta: end_host
+
+    - name: Require a full Django deployment for snapshot recovery
+      ansible.builtin.assert:
+        that:
+          - app_django_enabled | default(true) | bool
+          - not (app_frontend_only_update | default(false) | bool)
+          - app_restore_snapshot is match('^[0-9a-f]{8,64}$')
+          - not ansible_check_mode
+        fail_msg: Restore requires a full Django deployment and an explicit snapshot ID, outside check mode.
+      when: app_restore_snapshot | default('') | length > 0
+
     - name: Validate the selected Django module
       ansible.builtin.assert:
         that: app_django_module is match('^[a-zA-Z_][a-zA-Z0-9_]*$')

@@ -1,0 +1,19 @@
+{% set credentials = (app_backup_aws_secret_result.stdout | from_json)
+    if app_backup_aws_secret_id | length > 0 else
+    {'AccessKeyId': app_backup_aws_access_key_id,
+     'SecretAccessKey': app_backup_aws_secret_access_key} %}
+{{ {
+    'app': app_name,
+    'database': app_database,
+    'database_user': app_database_user,
+    'media_dir': app_home + '/media',
+    'media_user': app_user,
+    'media_group': 'www-data',
+    'state_dir': '/var/lib/ansible-app-backup/' + app_name,
+    'repository': app_backup_repository,
+    'region': app_backup_region,
+    'retention_days': app_backup_retention_days | int,
+    'password': app_backup_password,
+    'access_key_id': credentials.AccessKeyId,
+    'secret_access_key': credentials.SecretAccessKey
+} | to_json }}

@@ -1,0 +1,43 @@
+---
+- name: Validate database and media backup configuration
+  ansible.builtin.assert:
+    that:
+      - app_name is match('^[a-z][a-z0-9_]{0,30}$')
+      - app_django_enabled | bool
+      - app_media_enabled | bool
+      - app_django_host == inventory_hostname
+      - app_postgresql_host == inventory_hostname
+      - app_database_host in ['127.0.0.1', 'localhost', '::1']
+      - app_database is match('^[a-z][a-z0-9_]{0,62}$')
+      - app_home is match('^/[a-zA-Z0-9_./-]+$')
+      - app_home != '/'
+      - "'..' not in app_home.split('/')"
+      - app_backup_bucket is match('^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')
+      - app_backup_repository is match('^s3:https://[a-zA-Z0-9.-]+(:[0-9]+)?/[a-z0-9][a-z0-9.-]*/[a-zA-Z0-9_/-]+$')
+      - app_backup_repository.endswith('/' + app_name)
+      - app_backup_repository == 's3:https://' + app_backup_endpoint + '/' + app_backup_bucket + '/' + app_name
+      - app_backup_region is match('^[a-z0-9-]+$')
+      - app_backup_retention_days | int > 0
+      - app_backup_retention_days | string is match('^[1-9][0-9]*$')
+      - app_backup_schedule | length > 0
+      - "'\n' not in app_backup_schedule"
+      - "'\r' not in app_backup_schedule"
+      - not (app_backup_provision_aws | bool) or app_backup_bucket is match('^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$')
+      - not (app_backup_provision_aws | bool) or app_backup_bucket_stack_name is match('^[a-zA-Z][a-zA-Z0-9-]{0,127}$')
+      - not (app_backup_provision_aws | bool) or app_backup_project_stack_name is match('^[a-zA-Z][a-zA-Z0-9-]{0,127}$')
+      - app_backup_access_key_serial | string == '' or app_backup_access_key_serial | string is match('^[1-9][0-9]*$')
+    fail_msg: >-
+      Backups require colocated Django, PostgreSQL and media, a positive retention,
+      a one-line systemd calendar and an HTTPS S3 repository at
+      <app_backup_endpoint>/<app_backup_bucket>/<app_name>.
+
+- name: Require protected backup credentials
+  ansible.builtin.assert:
+    that:
+      - app_backup_password | length >= 32
+      - >-
+        app_backup_provision_aws | bool or app_backup_aws_secret_id | length > 0 or
+        (app_backup_aws_access_key_id | length > 0 and
+         app_backup_aws_secret_access_key | length > 0)
+    fail_msg: Supply a restic password through Vault and enable AWS provisioning or supply existing AWS credentials.
+  no_log: true

@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Shared private backup bucket with independent restic repositories per project.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@v3
+Parameters:
+  BucketName:
+    Type: String
+    Description: Globally unique bucket name; use the same value in app_backup_bucket.
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$"
+Resources:
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: One bucket amortizes management across isolated project repositories.
+        must:
+          - Preserve backup data on stack deletion or replacement.
+          - Never expire current restic objects outside restic.
+    Properties:
+      BucketName:
+        Ref: BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+  BackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Keep transport encryption enforced even if the stack is deleted.
+        must:
+          - Never grant public access.
+    Properties:
+      Bucket:
+        Ref: BackupBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - Fn::GetAtt: [BackupBucket, Arn]
+              - Fn::Sub: "${BackupBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+                aws:PrincipalIsAWSService: false
+Outputs:
+  BucketName:
+    Description: Set app_backup_bucket to this value for every project.
+    Value:
+      Ref: BackupBucket
+  Region:
+    Description: Set app_backup_region to this value for every project.
+    Value:
+      Ref: AWS::Region

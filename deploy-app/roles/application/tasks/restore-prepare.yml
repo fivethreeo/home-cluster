@@ -1,0 +1,45 @@
+---
+- name: Require supported deployment recovery
+  ansible.builtin.assert:
+    that:
+      - app_deploy_code | bool
+      - not (app_frontend_only_update | bool)
+      - not (app_backup_list | bool)
+      - app_restore_snapshot is match('^[0-9a-f]{8,64}$')
+      - not ansible_check_mode
+      - not (app_ts_backend_enabled | bool) or app_ts_backend_host == inventory_hostname
+      - not (app_ts_ws_backend_enabled | bool) or app_ts_ws_backend_host == inventory_hostname
+    fail_msg: >-
+      Restore requires a full colocated Django deployment and an explicit snapshot ID.
+      Listing, frontend-only updates, remote TypeScript components and check mode are not supported.
+
+- name: Install recovery tools and protected credentials without starting timers
+  ansible.builtin.include_tasks: backup-setup.yml
+
+- name: Download and validate the selected snapshot before stopping application services
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/ansible-app-backup
+      - "{{ app_secrets_dir }}/backup.json"
+      - prepare-restore
+      - "{{ app_restore_snapshot }}"
+  register: app_restore_prepared
+
+- name: Record the private restore staging directory
+  ansible.builtin.set_fact:
+    app_restore_stage: "{{ (app_restore_prepared.stdout | from_json).stage }}"
+
+- name: Inspect backup units before recovery
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/application-backup-{{ app_name }}.{{ item }}"
+  loop:
+    - timer
+    - service
+  register: app_restore_backup_units
+
+- name: Stop scheduled and active backups during recovery
+  ansible.builtin.systemd_service:
+    name: "application-backup-{{ app_name }}.{{ item.item }}"
+    state: stopped
+  loop: "{{ app_restore_backup_units.results }}"
+  when: item.stat.exists

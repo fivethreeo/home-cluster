@@ -43,6 +43,32 @@
     virtualenv: "{{ app_virtualenv }}"
     virtualenv_command: /usr/bin/python3 -m venv
 
+- name: Select a fresh private cache namespace for restored data
+  ansible.builtin.copy:
+    content: "{{ app_name }}:{{ app_restore_stage | basename }}"
+    dest: "/var/lib/ansible-app-backup/{{ app_name }}/cache-prefix"
+    owner: root
+    group: root
+    mode: "0600"
+  when: app_restore_snapshot | length > 0
+
+- name: Inspect a persistent application cache namespace
+  ansible.builtin.stat:
+    path: "/var/lib/ansible-app-backup/{{ app_name }}/cache-prefix"
+  register: app_cache_namespace_file
+
+- name: Read the persistent application cache namespace
+  ansible.builtin.slurp:
+    src: "/var/lib/ansible-app-backup/{{ app_name }}/cache-prefix"
+  register: app_cache_namespace
+  when: app_cache_namespace_file.stat.exists
+
+- name: Preserve cache isolation across later deployments
+  ansible.builtin.set_fact:
+    app_runtime_cache_prefix: >-
+      {{ (app_cache_namespace.content | b64decode | trim)
+         if app_cache_namespace_file.stat.exists else app_name }}
+
 - name: Write protected Django runtime configuration
   ansible.builtin.template:
     src: prosango.env.j2
@@ -89,6 +115,21 @@
   changed_when: false
   no_log: true
 
+- name: Replace database and media with the prepared recovery snapshot
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/ansible-app-backup
+      - "{{ app_secrets_dir }}/backup.json"
+      - apply-restore
+      - "{{ app_restore_stage }}"
+  register: app_restore_applied
+  when: app_restore_snapshot | length > 0
+
+- name: Show retained pre-restore database and media recovery paths
+  ansible.builtin.debug:
+    msg: "{{ app_restore_applied.stdout | from_json }}"
+  when: app_restore_snapshot | length > 0
+
 - name: Apply database migrations
   become_user: "{{ app_user }}"
   ansible.builtin.command:
@@ -102,6 +143,25 @@
     DJANGO_ENV_FILE: "{{ app_environment_file }}"
   register: app_migrations
   changed_when: "'No migrations to apply.' not in app_migrations.stdout"
+  no_log: true
+
+- name: Discard pre-restore queued Celery tasks unless explicitly retained
+  become_user: "{{ app_user }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ app_virtualenv }}/bin/python"
+      - manage.py
+      - shell
+      - -c
+      - >-
+        from celery.app.utils import find_app;
+        print(find_app({{ celery_app | to_json }}).control.purge())
+    chdir: "{{ app_code_dir }}"
+  environment:
+    DJANGO_ENV_FILE: "{{ app_environment_file }}"
+  when:
+    - app_restore_snapshot | length > 0
+    - app_restore_discard_queued_tasks | bool
   no_log: true
 
 - name: Collect prebuilt frontend and Django static files

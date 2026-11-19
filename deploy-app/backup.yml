@@ -1,0 +1,10 @@
+---
+- name: Configure backups without redeploying application services
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Configure application backups
+      ansible.builtin.include_role:
+        name: application
+        tasks_from: "{{ 'backup-list' if app_backup_list | default(false) | bool else 'backup' }}"
