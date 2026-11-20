@@ -323,6 +323,23 @@ class ComponentHostTests(unittest.TestCase):
         self.assertTrue(self.permitted())
 
 
+class CollectstaticTests(unittest.TestCase):
+    def test_published_downloads_are_preserved_only_when_configured(self):
+        tasks = yaml.safe_load((ROLE / "tasks/code.yml").read_text())
+        task = next(item for item in tasks if item["name"] == "Collect prebuilt frontend and Django static files")
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        environment.filters["ternary"] = lambda value, yes, no: yes if value else no
+        expression = task["ansible.builtin.command"]["argv"].strip()[2:-2].strip()
+        render = environment.compile_expression(expression)
+        expected = ["/srv/example/.venv/bin/python", "manage.py", "collectstatic", "--noinput"]
+        self.assertEqual(render(app_virtualenv="/srv/example/.venv"), expected + ["--clear"])
+        self.assertEqual(
+            render(app_virtualenv="/srv/example/.venv", app_collectstatic_clear=False),
+            expected,
+        )
+
+
 class ProsangoEnvironmentTests(unittest.TestCase):
     def render(self, **variables):
         environment = Environment(
@@ -338,6 +355,9 @@ class ProsangoEnvironmentTests(unittest.TestCase):
             app_django_address=variables.get("app_django_address", "127.0.0.1"),
             app_django_host=variables.get("app_django_host", "django"),
             app_frontend_enabled=variables.get("app_frontend_enabled", True),
+            app_management_require_app_verification=variables.get(
+                "app_management_require_app_verification", True
+            ),
             django_internal_auth_token=variables.get("django_internal_auth_token", ""),
             app_session_cookie_name=variables.get("app_session_cookie_name", "sessionid"),
             app_csrf_cookie_name=variables.get("app_csrf_cookie_name", "csrftoken"),
@@ -392,6 +412,11 @@ class ProsangoEnvironmentTests(unittest.TestCase):
             with self.subTest(enabled=enabled):
                 values = self.render(app_frontend_enabled=enabled)
                 self.assertEqual(values["DJANGO_FRONTEND_ENABLED"], str(enabled).lower())
+
+    def test_management_verification_requires_an_explicit_deployment_opt_out(self):
+        self.assertEqual(self.render()["DJANGO_MANAGEMENT_REQUIRE_APP_VERIFICATION"], "true")
+        values = self.render(app_management_require_app_verification=False)
+        self.assertEqual(values["DJANGO_MANAGEMENT_REQUIRE_APP_VERIFICATION"], "false")
 
     def test_django_mount_prefix_is_empty_for_root_and_configured_for_subpath(self):
         self.assertEqual(self.render()["DJANGO_SCRIPT_NAME"], "")

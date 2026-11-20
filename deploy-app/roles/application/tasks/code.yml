@@ -167,12 +167,9 @@
 - name: Collect prebuilt frontend and Django static files
   become_user: "{{ app_user }}"
   ansible.builtin.command:
-    argv:
-      - "{{ app_virtualenv }}/bin/python"
-      - manage.py
-      - collectstatic
-      - --noinput
-      - --clear
+    argv: >-
+      {{ [app_virtualenv + '/bin/python', 'manage.py', 'collectstatic', '--noinput']
+         + (app_collectstatic_clear | default(true) | bool | ternary(['--clear'], [])) }}
     chdir: "{{ app_code_dir }}"
   environment:
     DJANGO_ENV_FILE: "{{ app_environment_file }}"
