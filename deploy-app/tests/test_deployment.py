@@ -323,6 +323,69 @@ class ComponentHostTests(unittest.TestCase):
         self.assertTrue(self.permitted())
 
 
+class TranslationCatalogTests(unittest.TestCase):
+    def test_catalogs_are_compiled_with_gettext_before_starting_django(self):
+        tasks = yaml.safe_load((ROLE / "tasks/code.yml").read_text())
+        gettext = next(task for task in tasks if task["name"] == "Install GNU gettext for Django translations")
+        self.assertEqual(gettext["ansible.builtin.apt"]["name"], "gettext")
+        names = [task["name"] for task in tasks]
+        index = names.index("Compile Django translation catalogs")
+        self.assertLess(names.index("Install application Python dependencies"), index)
+        self.assertLess(names.index("Write protected Django runtime configuration"), index)
+        self.assertLess(index, names.index("Collect prebuilt frontend and Django static files"))
+        self.assertLess(index, names.index("Enable and start the deployed backend"))
+        task = tasks[index]
+        self.assertEqual(task["become_user"], "{{ app_user }}")
+        self.assertEqual(task["ansible.builtin.command"], {
+            "argv": ["{{ app_virtualenv }}/bin/python", "manage.py", "compilemessages"],
+            "chdir": "{{ app_code_dir }}",
+        })
+        self.assertEqual(task["environment"], {"DJANGO_ENV_FILE": "{{ app_environment_file }}"})
+        self.assertTrue(task["no_log"])
+
+    def test_translation_tools_and_compilation_are_opt_in(self):
+        defaults = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+        self.assertIs(defaults["app_compilemessages_enabled"], False)
+        tasks = yaml.safe_load((ROLE / "tasks/code.yml").read_text())
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters["bool"] = bool
+        for name in [
+            "Install GNU gettext for Django translations",
+            "Find Django translation catalog directories",
+            "Allow the application user to compile Django catalogs",
+            "Compile Django translation catalogs",
+        ]:
+            with self.subTest(task=name):
+                task = next(task for task in tasks if task["name"] == name)
+                enabled = environment.compile_expression(task["when"])
+                self.assertFalse(enabled(**defaults))
+                self.assertTrue(enabled(app_compilemessages_enabled=True))
+
+    def test_catalog_directories_are_writable_before_compilation(self):
+        tasks = yaml.safe_load((ROLE / "tasks/code.yml").read_text())
+        names = [task["name"] for task in tasks]
+        find = tasks[names.index("Find Django translation catalog directories")]
+        writable = tasks[names.index("Allow the application user to compile Django catalogs")]
+        self.assertEqual(find["ansible.builtin.find"]["patterns"], "LC_MESSAGES")
+        self.assertLess(names.index(find["name"]), names.index(writable["name"]))
+        self.assertLess(names.index(writable["name"]), names.index("Compile Django translation catalogs"))
+        files = Environment(undefined=StrictUndefined).compile_expression(writable["loop"].strip()[2:-2])
+        self.assertEqual(files(app_translation_directories={"skipped": True}), [])
+        self.assertEqual(files(app_translation_directories={"files": [{"path": "/app/locale/nb/LC_MESSAGES"}]}),
+                         [{"path": "/app/locale/nb/LC_MESSAGES"}])
+        self.assertEqual(writable["ansible.builtin.file"], {
+            "path": "{{ item.path }}", "state": "directory",
+            "owner": "{{ app_user }}", "group": "{{ app_user }}", "mode": "0750",
+        })
+
+    def test_unchanged_translation_catalogs_do_not_report_a_deployment_change(self):
+        tasks = yaml.safe_load((ROLE / "tasks/code.yml").read_text())
+        task = next(task for task in tasks if task["name"] == "Compile Django translation catalogs")
+        changed = Environment(undefined=StrictUndefined).compile_expression(task["changed_when"])
+        self.assertTrue(changed(app_translations={"stdout": "processing file django.po in locale/nb/LC_MESSAGES"}))
+        self.assertFalse(changed(app_translations={"stdout": "File django.po is already compiled and up to date."}))
+
+
 class CollectstaticTests(unittest.TestCase):
     def test_published_downloads_are_preserved_only_when_configured(self):
         tasks = yaml.safe_load((ROLE / "tasks/code.yml").read_text())

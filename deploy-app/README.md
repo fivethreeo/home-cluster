@@ -605,6 +605,14 @@ PostgreSQL authentication is applied before `migrate --noinput`; then
 `collectstatic --clear` copies Django and prebuilt frontend files to the persistent
 static root. Gunicorn starts on `127.0.0.1:8000` and is health-checked before the
 remaining Celery/Nginx configuration.
+
+Set `app_compilemessages_enabled: true` to compile Django translation catalogs
+during code deployment. It defaults to `false`; when enabled, the role installs
+GNU gettext, makes the extracted `LC_MESSAGES` directories writable by the
+application user, and runs `manage.py compilemessages` with the protected runtime
+configuration before static collection and backend startup. This is required
+for projects that ship `.po` sources without generated `.mo` catalogs.
+
 With frontend enabled, Prosango requires its editor manifest as well as the main frontend manifest;
 Template's frontend has no editor and needs only `dist/manifest.json`.
 

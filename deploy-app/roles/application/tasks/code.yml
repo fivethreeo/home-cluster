@@ -9,6 +9,12 @@
     update_cache: true
     cache_valid_time: 3600
 
+- name: Install GNU gettext for Django translations
+  ansible.builtin.apt:
+    name: gettext
+    state: present
+  when: app_compilemessages_enabled | bool
+
 - name: Apply PostgreSQL authentication and listener changes before migrations
   ansible.builtin.meta: flush_handlers
 
@@ -89,6 +95,42 @@
   environment:
     DJANGO_ENV_FILE: "{{ app_environment_file }}"
   changed_when: false
+  no_log: true
+
+- name: Find Django translation catalog directories
+  ansible.builtin.find:
+    paths: "{{ app_code_dir }}"
+    patterns: LC_MESSAGES
+    file_type: directory
+    recurse: true
+  register: app_translation_directories
+  when: app_compilemessages_enabled | bool
+
+- name: Allow the application user to compile Django catalogs
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0750"
+  loop: "{{ app_translation_directories.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: app_compilemessages_enabled | bool
+
+- name: Compile Django translation catalogs
+  become_user: "{{ app_user }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ app_virtualenv }}/bin/python"
+      - manage.py
+      - compilemessages
+    chdir: "{{ app_code_dir }}"
+  environment:
+    DJANGO_ENV_FILE: "{{ app_environment_file }}"
+  register: app_translations
+  changed_when: "'processing file' in app_translations.stdout"
+  when: app_compilemessages_enabled | bool
   no_log: true
 
 - name: Verify the enabled Django Memcached backend
