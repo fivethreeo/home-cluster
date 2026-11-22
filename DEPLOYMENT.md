@@ -1,5 +1,9 @@
 # From ISO to deployed Prosango
 
+For a smaller conversational introduction that starts with an existing host,
+see the [apprentice guide](docs/index.md). It also covers the Vault password
+file, secrets script, and explicit `dd` USB-writing precautions.
+
 This walkthrough deploys **Prosango on `sugar` (`192.168.1.100`)**, initially
 using HTTP and its IP address. Run commands from the `ansible-home-cluster`
 repository unless a step says otherwise.

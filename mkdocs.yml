@@ -1,0 +1,19 @@
+site_name: Home Cluster Apprentice Guide
+docs_dir: docs
+site_dir: site
+nav:
+  - Home: index.md
+  - Start small:
+      - What you are doing: apprentice/01-start-small.md
+      - Your first Ansible run: apprentice/02-first-ansible-run.md
+      - The Vault password file: apprentice/03-vault-password-file.md
+      - The secrets script: apprentice/04-secrets-script.md
+  - Put one app on the host:
+      - A minimal deployment: apprentice/05-minimal-deployment.md
+      - Make the next change: apprentice/06-next-change.md
+  - When you need a fresh machine:
+      - Build an installer ISO: apprentice/07-build-an-iso.md
+      - Write the USB with dd: apprentice/08-write-the-usb.md
+      - Install and connect: apprentice/09-install-and-connect.md
+  - Take over:
+      - Keep the setup usable: apprentice/10-take-over.md
